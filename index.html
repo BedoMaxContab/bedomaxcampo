@@ -101,7 +101,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.2.1';
+const VERSIONE = '0.2.2';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -279,6 +279,14 @@ function mostra(v, arg) {
   vistaAttuale = v(...arg) || null; $('#indietro').hidden = pila.length <= 1; window.scrollTo(0, 0); aggiornaRete();
 }
 $('#indietro').addEventListener('click', indietro);
+// tocco doppio per sbaglio: il pulsante si spegne finche' l'operazione non e' finita (+ 1,5 s)
+function una(el, fn) {
+  if (!el) return;
+  el.onclick = async ev => {
+    if (el.dataset.occ) return; el.dataset.occ = '1'; el.disabled = true;
+    try { await fn(ev); } finally { setTimeout(() => { delete el.dataset.occ; el.disabled = false; }, 1500); }
+  };
+}
 function avviso(t) { const d = document.createElement('div'); d.className = 'avviso'; d.textContent = t; $('#vista').prepend(d); }
 
 function vistaSetup() {
@@ -294,7 +302,7 @@ function vistaSetup() {
       <div id="esitoSetup"></div>
       <p class="muted">BedoMaxCampo ${VERSIONE} · archivio ${OWNER}/${REPO}</p>
     </div>`;
-  $('#salva').onclick = async () => {
+  una($('#salva'), async () => {
     const nome = $('#nome').value.trim(), tok = $('#chiave').value.trim(), out = $('#esitoSetup');
     if (!nome || !tok) { out.innerHTML = '<div class="esito ko"><span class="tit">Scrivi il nome e la chiave.</span></div>'; return; }
     cfg = {dispositivo: nome, token: tok}; mem.set('cfg', cfg);
@@ -309,7 +317,7 @@ function vistaSetup() {
         '<br>Controlla la chiave. Se sei senza rete puoi comunque proseguire.</div><button class="btn sec" id="prosegui">Prosegui senza provare</button>';
       $('#prosegui').onclick = () => { pila = []; vai(vistaLavori); };
     }
-  };
+  });
 }
 
 function vistaLavori() {
@@ -339,8 +347,8 @@ function vistaLavori() {
       };
       lista.appendChild(b);
     });
-    $('#agg').onclick = async () => { $('#agg').textContent = 'Aggiorno…'; await sincronizzaTutto(); disegna(); };
-    $('#conf').onclick = () => vai(vistaSetup);
+    una($('#agg'), async () => { $('#agg').textContent = 'Aggiorno…'; await sincronizzaTutto(); disegna(); });
+    una($('#conf'), () => vai(vistaSetup));
   };
   disegna();
   return {ridisegna: disegna};
@@ -371,7 +379,7 @@ function vistaCondominio(c) {
       b.onclick = () => vai(vistaInterno, c, i.interno);
       $('#int').appendChild(b);
     });
-    $('#sync').onclick = async () => { $('#sync').textContent = 'Sincronizzo…'; try { await sincronizza(c); } catch (e) { avviso(e.message); } disegna(); };
+    una($('#sync'), async () => { $('#sync').textContent = 'Sincronizzo…'; try { await sincronizza(c); } catch (e) { avviso(e.message); } disegna(); });
   };
   disegna(); sincronizza(c).then(disegna).catch(() => {});
   return {ridisegna: disegna};
@@ -434,7 +442,7 @@ function vistaCalorifero(c, id) {
           $('#esito').innerHTML = `<div class="esito warn"><span class="tit">Controlla il numero</span>
             Ho letto <b>${esc(vicino)}</b>: sull'etichetta c'e' scritto <b class="big">${esc(r.nuova)}</b>?
             <div class="riga"><button class="btn sec pic" id="nonc">No, è diverso</button><button class="btn pri pic" id="conf">Sì, è questo</button></div></div>`;
-          $('#conf').onclick = () => valuta([r.nuova], 'numero confermato', []);
+          una($('#conf'), () => valuta([r.nuova], 'numero confermato', []));
           $('#nonc').onclick = () => valuta([], 'numero', ['numeri letti: ' + o.cand.join(', ')]);
           return;
         }
@@ -449,11 +457,11 @@ function vistaCalorifero(c, id) {
         <input class="txt" id="mm" inputmode="numeric" maxlength="8" autocomplete="off"></label>
         <button class="btn pri pic" id="ok">Controlla</button></div>`;
       $('#mm').focus();
-      $('#ok').onclick = () => { const v = $('#mm').value.replace(/\D/g, ''); if (v.length !== 8) { $('#mm').focus(); return; } valuta([v], 'manuale', []); };
+      una($('#ok'), () => { const v = $('#mm').value.replace(/\D/g, ''); if (v.length !== 8) { $('#mm').focus(); return; } valuta([v], 'manuale', []); });
     };
     if ($('#annulla')) $('#annulla').onclick = () => {
       $('#esito').innerHTML = '<div class="esito warn"><span class="tit">Annullare la sostituzione registrata?</span><div class="riga"><button class="btn sec pic" id="no">No</button><button class="btn pri pic" id="si">Sì, annulla</button></div></div>';
-      $('#no').onclick = () => disegna(); $('#si').onclick = () => { salvaRec(c, id, {stato: 'annullato', ora: new Date().toISOString()}); disegna(); };
+      $('#no').onclick = () => disegna(); una($('#si'), () => { salvaRec(c, id, {stato: 'annullato', ora: new Date().toISOString()}); disegna(); });
     };
   };
   function valuta(matr, metodo, codici) {
@@ -482,10 +490,10 @@ function vistaCalorifero(c, id) {
     else msg = 'Questa matricola non è nel lavoro di questo condominio.';
     out.innerHTML = `<div class="esito ko"><span class="tit">SBAGLIATO ✗</span><b class="big">${esc(m)}</b><span>${msg}</span>
       <div class="riga"><button class="btn sec pic" id="forza">Montato comunque: segna PROBLEMA</button></div></div>`;
-    $('#forza').onclick = () => {
+    una($('#forza'), () => {
       salvaRec(c, id, {stato: 'problema', letto: m, metodo, ora: new Date().toISOString(), nota: 'montato ' + m + ' invece di ' + r.nuova});
       disegna('<div class="esito warn"><span class="tit">Segnato con PROBLEMA</span>L’ufficio vedrà la differenza.</div>');
-    };
+    });
   }
   disegna();
   return {ridisegna: () => {}};
