@@ -80,6 +80,13 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
 .attesa{display:flex;align-items:center;gap:12px;font-weight:700}
 .attesa::before{content:"";width:22px;height:22px;border-radius:50%;border:3px solid var(--line);border-top-color:var(--brand2);animation:g 1s linear infinite}
 @keyframes g{to{transform:rotate(360deg)}}
+.scan{position:fixed;inset:0;z-index:50;background:#000;display:flex;flex-direction:column}
+.scan video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.scan .guida{position:absolute;left:7%;right:7%;top:30%;height:30%;border:3px solid #fff;border-radius:14px;box-shadow:0 0 0 2000px rgba(0,0,0,.45)}
+.scan .guida.ok{border-color:#4ade80}
+.scan .msg{position:absolute;left:16px;right:16px;top:calc(env(safe-area-inset-top,0px) + 16px);color:#fff;font-weight:700;font-size:18px;text-align:center;text-shadow:0 1px 3px #000}
+.scan .sotto{position:absolute;left:16px;right:16px;bottom:calc(env(safe-area-inset-bottom,0px) + 18px);display:flex;flex-direction:column;gap:10px}
+.scan .stato{color:#fff;text-align:center;font-size:15px;text-shadow:0 1px 3px #000}
 @media (prefers-reduced-motion: reduce){.attesa::before{animation:none}}
 </style>
 </head>
@@ -101,7 +108,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.2.2';
+const VERSIONE = '0.3.0';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -271,6 +278,71 @@ async function leggiNumeri(file, atteso) {
   return {cand: [...cand], compatto};
 }
 
+/* ---------- inquadratura dal vivo: legge di continuo finche' trova la matricola ----------
+   Ogni ~150 ms prova Data Matrix / codice a barre sul riquadro; ogni ~1,2 s prova anche il numero stampato (OCR).
+   Risolve con {matr:[..], metodo} oppure null se l'operatore annulla. */
+async function apriScanner(atteso, note) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('questo browser non da\' accesso alla fotocamera');
+  await preparaMotore();
+  preparaOcr().catch(() => {});
+  const stream = await navigator.mediaDevices.getUserMedia({audio: false,
+    video: {facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080}}});
+  const ov = document.createElement('div'); ov.className = 'scan';
+  ov.innerHTML = `<video playsinline muted autoplay></video><div class="guida"></div>
+    <div class="msg">Metti l'etichetta del ripartitore NUOVO dentro il riquadro</div>
+    <div class="sotto"><div class="stato">Cerco la matricola…</div>
+      <div class="riga"><button class="btn sec" id="torcia" hidden>Torcia</button><button class="btn sec" id="annScan">Annulla</button></div></div>`;
+  document.body.appendChild(ov);
+  const video = ov.querySelector('video'), guida = ov.querySelector('.guida'), stato = ov.querySelector('.stato');
+  video.srcObject = stream; try { await video.play(); } catch (e) {}
+  const traccia = stream.getVideoTracks()[0];
+  try {
+    const cap = traccia.getCapabilities ? traccia.getCapabilities() : {};
+    if (cap.torch) { const t = ov.querySelector('#torcia'); t.hidden = false; let acc = false;
+      t.onclick = () => { acc = !acc; traccia.applyConstraints({advanced: [{torch: acc}]}).catch(() => {}); }; }
+  } catch (e) {}
+  const tela = document.createElement('canvas'), g = tela.getContext('2d', {willReadFrequently: true});
+  const opz = {tryHarder: true, formats: ['DataMatrix', 'Code128', 'ITF', 'Code39'], maxNumberOfSymbols: 2};
+  let finito = false, ocrOcc = false, ultimoOcr = 0; const t0 = Date.now();
+  return new Promise(risolvi => {
+    const chiudi = v => { if (finito) return; finito = true; stream.getTracks().forEach(t => t.stop()); ov.remove(); risolvi(v); };
+    ov.querySelector('#annScan').onclick = () => chiudi(null);
+    const riquadro = () => {   // riquadro guida (schermo) -> pixel del video (object-fit: cover)
+      const vw = video.videoWidth, vh = video.videoHeight, W = ov.clientWidth, H = ov.clientHeight;
+      const k = Math.max(W / vw, H / vh), ox = (W - vw * k) / 2, oy = (H - vh * k) / 2, b = guida.getBoundingClientRect();
+      const x = Math.max(0, (b.left - ox) / k), y = Math.max(0, (b.top - oy) / k);
+      return [x, y, Math.min(vw - x, b.width / k), Math.min(vh - y, b.height / k)];
+    };
+    const giro = async () => {
+      if (finito) return;
+      try {
+        if (video.readyState >= 2 && video.videoWidth) {
+          const [x, y, w, h] = riquadro(); const sc = Math.min(1, 1400 / w);
+          tela.width = Math.round(w * sc); tela.height = Math.round(h * sc);
+          g.drawImage(video, x, y, w, h, 0, 0, tela.width, tela.height);
+          const ris = (await ZXingWASM.readBarcodes(g.getImageData(0, 0, tela.width, tela.height), opz)).filter(q => q.isValid);
+          const m = [...new Set(ris.map(q => matricolaDa(q.text)).filter(Boolean))];
+          if (m.length) { guida.classList.add('ok'); if (navigator.vibrate) navigator.vibrate(60); return chiudi({matr: m, metodo: 'video'}); }
+          if (!ocrOcc && ocrWorker && Date.now() - ultimoOcr > 1200) {
+            ocrOcc = true; ultimoOcr = Date.now();
+            const copia = document.createElement('canvas'); copia.width = tela.width; copia.height = tela.height; copia.getContext('2d').drawImage(tela, 0, 0);
+            ocrWorker.then(w2 => w2.recognize(copia)).then(({data}) => {
+              const comp = (data.text || '').replace(/\s+/g, '');
+              if (comp.includes(atteso)) { guida.classList.add('ok'); chiudi({matr: [atteso], metodo: 'numero'}); return; }
+              const altro = note.find(n => n !== atteso && comp.includes(n));
+              if (altro) chiudi({matr: [altro], metodo: 'numero'});
+            }).catch(() => {}).finally(() => { ocrOcc = false; });
+          }
+          const sec = Math.round((Date.now() - t0) / 1000);
+          if (sec > 10) stato.textContent = 'Non riesco ancora: avvicina o allontana un poco, evita i riflessi' + (sec > 25 ? ', oppure Annulla e scrivi la matricola a mano' : '');
+        }
+      } catch (e) { stato.textContent = 'Errore lettore: ' + e.message; }
+      setTimeout(giro, 150);
+    };
+    giro();
+  });
+}
+
 /* ---------- viste ---------- */
 let vistaAttuale = null, pila = [];
 function vai(v, ...arg) { pila.push([v, arg]); mostra(v, arg); }
@@ -417,10 +489,11 @@ function vistaCalorifero(c, id) {
         <span>Monta il nuovo</span><b>${esc(r.nuova)}</b>
       </div>
       ${s ? `<div class="esito ${s.r.stato === 'problema' || s.doppio ? 'ko' : 'ok'}"><span class="tit">${s.r.stato === 'problema' ? 'Segnato con PROBLEMA' : 'Già sostituito'}${s.mio ? '' : ' da ' + esc(s.r.da)}</span>
-        letto ${esc(s.r.letto || '-')} · ${s.r.metodo === 'manuale' ? 'inserito a mano' : s.r.metodo && s.r.metodo.startsWith('numero') ? 'dal numero stampato' + (s.r.metodo.includes('conf') ? ' (confermato)' : '') : 'da foto'} · ${new Date(s.r.ora).toLocaleString('it-IT')}
+        letto ${esc(s.r.letto || '-')} · ${s.r.metodo === 'manuale' ? 'inserito a mano' : s.r.metodo && s.r.metodo.startsWith('numero') ? 'dal numero stampato' + (s.r.metodo.includes('conf') ? ' (confermato)' : '') : 'letto dalla fotocamera'} · ${new Date(s.r.ora).toLocaleString('it-IT')}
         ${s.r.nota ? '<br>' + esc(s.r.nota) : ''}${s.doppio ? '<br><b>Attenzione: risulta fatto anche da ' + esc(s.altri.map(a => a.da).join(', ')) + '</b>' : ''}</div>` : ''}
       <div id="esito">${esitoHtml || ''}</div>
-      <label class="btn pri foto" for="scatto">Fotografa il ripartitore nuovo montato
+      <button class="btn pri" id="inquadra">📷 Inquadra il ripartitore nuovo montato</button>
+      <label class="btn sec pic foto" for="scatto">Scatta una foto (se l'inquadratura non legge)
         <input id="scatto" type="file" accept="image/*" capture="environment"></label>
       <button class="btn sec" id="mano" style="flex-direction:column;gap:2px;padding-block:8px">⌨ Scrivi la matricola a mano<small style="font-weight:400;font-size:14px">fotocamera guasta o etichetta illeggibile</small></button>
       ${s && s.mio ? '<button class="btn sec pic" id="annulla">Annulla questa sostituzione</button>' : ''}`;
@@ -452,6 +525,16 @@ function vistaCalorifero(c, id) {
         '<button class="btn sec pic" id="mano2">Scrivi la matricola a mano</button></div>'; $('#mano2').onclick = () => document.getElementById('mano').click(); }
     };
     $('#mano').onclick = () => aMano();
+    una($('#inquadra'), async () => {
+      $('#esito').innerHTML = '';
+      try {
+        const res = await apriScanner(r.nuova, p.righe.flatMap(y => [y.nuova, y.vecchia]));
+        if (res) valuta(res.matr, res.metodo, []);
+      } catch (err) {
+        $('#esito').innerHTML = '<div class="esito ko"><span class="tit">Fotocamera non disponibile</span>' + esc(err.message || err) +
+          '<br>Usa "Scatta una foto" oppure scrivi la matricola a mano. Se hai negato il permesso alla fotocamera, riattivalo nelle impostazioni.</div>';
+      }
+    });
     const aMano = () => {
       $('#esito').innerHTML = `<div class="sez"><label class="campo" for="mm">Matricola del ripartitore montato (8 cifre)
         <input class="txt" id="mm" inputmode="numeric" maxlength="8" autocomplete="off"></label>
