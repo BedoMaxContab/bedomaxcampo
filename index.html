@@ -92,6 +92,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
 <main id="vista"></main>
 
 <script src="zxing-reader.js"></script>
+<script src="tesseract.min.js"></script>
 <script>
 'use strict';
 /* =====================================================================
@@ -100,7 +101,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.1.0';
+const VERSIONE = '0.2.0';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -226,6 +227,48 @@ async function leggiEtichetta(file) {
   }
   const matr = [...new Set(ris.map(r => matricolaDa(r.text)).filter(Boolean))];
   return {matr, codici: ris.map(r => r.format + ': ' + r.text)};
+}
+
+/* ---------- lettura del NUMERO stampato (OCR) quando i codici non si leggono ----------
+   Tesseract (WebAssembly) tenuto nell'app: funziona anche senza rete. Usato solo come ripiego:
+   conta come GIUSTO solo se tra i numeri letti c'e' esattamente la matricola attesa. */
+let ocrWorker = null;
+function preparaOcr() {
+  if (!ocrWorker) ocrWorker = (async () => {
+    const base = new URL('./', location.href).href;
+    const w = await Tesseract.createWorker('eng', 1, {workerPath: base + 'worker.min.js', corePath: base, langPath: base.replace(/\/$/, ''), gzip: true});
+    await w.setParameters({tessedit_char_whitelist: '0123456789 ', tessedit_pageseg_mode: '11'});
+    return w;
+  })().catch(e => { ocrWorker = null; throw e; });
+  return ocrWorker;
+}
+function tela(img, k, contrasto) {
+  const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(img, 0, 0, c.width, c.height);
+  if (contrasto) {   // grigio + allungamento del contrasto (etichette opache, foto scure)
+    const d = g.getImageData(0, 0, c.width, c.height), a = d.data; let mn = 255, mx = 0;
+    for (let i = 0; i < a.length; i += 4) { const v = a[i] * .3 + a[i + 1] * .59 + a[i + 2] * .11; a[i] = v; if (v < mn) mn = v; if (v > mx) mx = v; }
+    const f = 255 / Math.max(1, mx - mn);
+    for (let i = 0; i < a.length; i += 4) { const v = (a[i] - mn) * f; a[i] = a[i + 1] = a[i + 2] = v; }
+    g.putImageData(d, 0, 0);
+  }
+  return c;
+}
+const distanza = (a, b) => { let n = 0; for (let i = 0; i < 8; i++) if (a[i] !== b[i]) n++; return n; };
+async function leggiNumeri(file, atteso) {
+  const w = await preparaOcr();
+  const img = await createImageBitmap(file); const lato = Math.max(img.width, img.height);
+  const passi = [[Math.min(1, 2000 / lato), false], [Math.min(1, 2000 / lato), true]];
+  if (lato < 1400) passi.push([Math.min(3, 2000 / lato), true]);   // foto piccola/ritagliata: ingrandisco
+  const cand = new Set(); let compatto = '';
+  for (const [k, ctr] of passi) {
+    const {data} = await w.recognize(tela(img, k, ctr));
+    const testo = data.text || ''; compatto += '|' + testo.replace(/\s+/g, '');
+    (testo.match(/\d[\d ]{6,12}\d/g) || []).map(t => t.replace(/ /g, ''))
+      .forEach(t => (t.length === 8 ? [t] : t.length > 8 ? (t.match(/\d{8}/g) || []) : []).forEach(x => cand.add(x)));
+    if (atteso && compatto.includes(atteso)) break;
+  }
+  return {cand: [...cand], compatto};
 }
 
 /* ---------- viste ---------- */
@@ -366,7 +409,7 @@ function vistaCalorifero(c, id) {
         <span>Monta il nuovo</span><b>${esc(r.nuova)}</b>
       </div>
       ${s ? `<div class="esito ${s.r.stato === 'problema' || s.doppio ? 'ko' : 'ok'}"><span class="tit">${s.r.stato === 'problema' ? 'Segnato con PROBLEMA' : 'Già sostituito'}${s.mio ? '' : ' da ' + esc(s.r.da)}</span>
-        letto ${esc(s.r.letto || '-')} · ${s.r.metodo === 'manuale' ? 'inserito a mano' : 'da foto'} · ${new Date(s.r.ora).toLocaleString('it-IT')}
+        letto ${esc(s.r.letto || '-')} · ${s.r.metodo === 'manuale' ? 'inserito a mano' : s.r.metodo && s.r.metodo.startsWith('numero') ? 'dal numero stampato' + (s.r.metodo.includes('conf') ? ' (confermato)' : '') : 'da foto'} · ${new Date(s.r.ora).toLocaleString('it-IT')}
         ${s.r.nota ? '<br>' + esc(s.r.nota) : ''}${s.doppio ? '<br><b>Attenzione: risulta fatto anche da ' + esc(s.altri.map(a => a.da).join(', ')) + '</b>' : ''}</div>` : ''}
       <div id="esito">${esitoHtml || ''}</div>
       <label class="btn pri foto" for="scatto">Fotografa il ripartitore nuovo montato
@@ -376,7 +419,27 @@ function vistaCalorifero(c, id) {
     $('#scatto').onchange = async e => {
       const f = e.target.files && e.target.files[0]; if (!f) return;
       $('#esito').innerHTML = '<div class="attesa">Leggo l’etichetta…</div>';
-      try { const l = await leggiEtichetta(f); valuta(l.matr, 'foto', l.codici); }
+      try {
+        const l = await leggiEtichetta(f);
+        if (l.matr.length) { valuta(l.matr, 'foto', l.codici); return; }
+        $('#esito').innerHTML = '<div class="attesa">Codici non leggibili: leggo il numero stampato…</div>';
+        const o = await leggiNumeri(f, r.nuova);
+        if (o.compatto.includes(r.nuova)) { valuta([r.nuova], 'numero', []); return; }
+        const noti = o.cand.filter(x => p.righe.some(y => y.nuova === x || y.vecchia === x));
+        if (noti.length) { valuta([noti[0]], 'numero', []); return; }
+        // lettura quasi giusta (1-2 cifre sbagliate dall'OCR) e piu' vicina all'atteso che a ogni altra matricola del lavoro
+        const tutte = p.righe.flatMap(y => [y.nuova, y.vecchia]);
+        const vicino = o.cand.find(x => distanza(x, r.nuova) <= 2 && tutte.every(t => t === r.nuova || distanza(x, t) > distanza(x, r.nuova)));
+        if (vicino) {
+          $('#esito').innerHTML = `<div class="esito warn"><span class="tit">Controlla il numero</span>
+            Ho letto <b>${esc(vicino)}</b>: sull'etichetta c'e' scritto <b class="big">${esc(r.nuova)}</b>?
+            <div class="riga"><button class="btn sec pic" id="nonc">No, è diverso</button><button class="btn pri pic" id="conf">Sì, è questo</button></div></div>`;
+          $('#conf').onclick = () => valuta([r.nuova], 'numero confermato', []);
+          $('#nonc').onclick = () => valuta([], 'numero', ['numeri letti: ' + o.cand.join(', ')]);
+          return;
+        }
+        valuta([], 'numero', o.cand.length ? ['numeri letti: ' + o.cand.join(', ')] : []);
+      }
       catch (err) { $('#esito').innerHTML = '<div class="esito ko"><span class="tit">Errore del lettore</span>' + esc(err.message) + '</div>'; }
     };
     $('#mano').onclick = () => {
