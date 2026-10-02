@@ -108,7 +108,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.4.0';
+const VERSIONE = '0.4.1';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -397,17 +397,17 @@ function vistaLavori() {
   const disegna = () => {
     const el = mem.get('elenco', []);
     $('#vista').innerHTML = `
-      <div class="sez"><h2>Lavori assegnati</h2><div id="lista" class="sez"></div></div>
+      <div class="sez"><h2>Condomini assegnati</h2><div id="lista" class="sez"></div></div>
       <button class="btn sec pic" id="agg">Aggiorna elenco</button>
       <button class="btn sec pic" id="conf">Dispositivo: ${esc(cfg.dispositivo)} · cambia</button>
       <p class="muted">BedoMaxCampo ${VERSIONE}</p>`;
     const lista = $('#lista');
-    if (!el.length) lista.innerHTML = '<p class="muted">Nessun lavoro. Quando l’ufficio carica un condominio da BedoMaxBanco compare qui (serve la rete la prima volta).</p>';
+    if (!el.length) lista.innerHTML = '<p class="muted">Nessun condominio. Quando l’ufficio carica un condominio da BedoMaxBanco compare qui (serve la rete la prima volta).</p>';
     el.forEach(l => {
       const p = piano(l.condominio); const tot = p ? p.righe.length : l.ripartitori;
       const fatti = p ? p.righe.filter(r => statoCal(l.condominio, r.id)).length : 0;
       const b = document.createElement('button'); b.className = 'voce';
-      b.innerHTML = `<div class="t"><b>${esc(l.condominio)}</b><span>${esc(l.indirizzo || '')}${p ? '' : ' · da scaricare'}</span></div>
+      b.innerHTML = `<div class="t"><b>${esc(l.condominio)}</b><span>${esc(l.indirizzo || '')}${l.amministratore ? ' · Amm. ' + esc(l.amministratore) : ''}${p ? '' : ' · da scaricare'}</span></div>
         <span class="cnt ${tot && fatti === tot ? 'tutto' : ''}">${fatti}/${tot}</span>`;
       b.onclick = async () => {
         if (!piano(l.condominio)) {
@@ -436,7 +436,7 @@ function vistaCondominio(c) {
     const us = mem.get('ultimaSync:' + c, 0);
     $('#vista').innerHTML = `
       <div class="sez">
-        <p class="muted">${esc(p.indirizzo || '')}</p>
+        <p><b>${esc(p.indirizzo || '')}</b>${p.amministratore ? ' · Amministratore: ' + esc(p.amministratore) : ''}</p>
         <div class="barra"><i style="width:${tot ? Math.round(100 * fatti / tot) : 0}%"></i></div>
         <p><b>${fatti}</b> su <b>${tot}</b> ripartitori sostituiti · aggiornato ${us ? new Date(us).toLocaleTimeString('it-IT', {hour: '2-digit', minute: '2-digit'}) : 'mai'}</p>
       </div>
