@@ -101,7 +101,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.2.0';
+const VERSIONE = '0.2.1';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -414,7 +414,7 @@ function vistaCalorifero(c, id) {
       <div id="esito">${esitoHtml || ''}</div>
       <label class="btn pri foto" for="scatto">Fotografa il ripartitore nuovo montato
         <input id="scatto" type="file" accept="image/*" capture="environment"></label>
-      <button class="btn sec pic" id="mano">Etichetta illeggibile: scrivi la matricola</button>
+      <button class="btn sec" id="mano" style="flex-direction:column;gap:2px;padding-block:8px">⌨ Scrivi la matricola a mano<small style="font-weight:400;font-size:14px">fotocamera guasta o etichetta illeggibile</small></button>
       ${s && s.mio ? '<button class="btn sec pic" id="annulla">Annulla questa sostituzione</button>' : ''}`;
     $('#scatto').onchange = async e => {
       const f = e.target.files && e.target.files[0]; if (!f) return;
@@ -440,9 +440,11 @@ function vistaCalorifero(c, id) {
         }
         valuta([], 'numero', o.cand.length ? ['numeri letti: ' + o.cand.join(', ')] : []);
       }
-      catch (err) { $('#esito').innerHTML = '<div class="esito ko"><span class="tit">Errore del lettore</span>' + esc(err.message) + '</div>'; }
+      catch (err) { $('#esito').innerHTML = '<div class="esito ko"><span class="tit">Errore del lettore</span>' + esc(err.message) +
+        '<button class="btn sec pic" id="mano2">Scrivi la matricola a mano</button></div>'; $('#mano2').onclick = () => document.getElementById('mano').click(); }
     };
-    $('#mano').onclick = () => {
+    $('#mano').onclick = () => aMano();
+    const aMano = () => {
       $('#esito').innerHTML = `<div class="sez"><label class="campo" for="mm">Matricola del ripartitore montato (8 cifre)
         <input class="txt" id="mm" inputmode="numeric" maxlength="8" autocomplete="off"></label>
         <button class="btn pri pic" id="ok">Controlla</button></div>`;
@@ -457,8 +459,10 @@ function vistaCalorifero(c, id) {
   function valuta(matr, metodo, codici) {
     const out = $('#esito');
     if (!matr.length) {
-      out.innerHTML = '<div class="esito ko"><span class="tit">Nessuna matricola letta</span>Rifai la foto più vicino, a fuoco e senza riflessi.' +
-        (codici.length ? '<br><small>' + esc(codici.join(' | ')) + '</small>' : '') + '</div>';
+      out.innerHTML = '<div class="esito ko"><span class="tit">Nessuna matricola letta</span>Rifai la foto più vicino, a fuoco e senza riflessi, oppure scrivila a mano.' +
+        (codici.length ? '<br><small>' + esc(codici.join(' | ')) + '</small>' : '') +
+        '<button class="btn sec pic" id="mano2">Scrivi la matricola a mano</button></div>';
+      $('#mano2').onclick = () => document.getElementById('mano').click();
       return;
     }
     const m = matr.includes(r.nuova) ? r.nuova : matr[0];
