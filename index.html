@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BedoMaxCampo</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#9A3412">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="BMCampo">
+<link rel="apple-touch-icon" href="icona-180.png">
+<style>
+/* BedoMaxCampo: una colonna, pulsanti grandi da usare con i guanti; testata fissa con stato rete */
+:root{
+  --bg:#f6f3ef; --fg:#1d1a17; --muted:#6b625a; --panel:#ffffff; --line:#e2dbd3;
+  --brand:#9A3412; --brand2:#C2410C; --brand-fg:#ffffff;
+  --ok:#166534; --ok-bg:#dcfce7; --ko:#b91c1c; --ko-bg:#fee2e2; --warn:#92400e; --warn-bg:#fef3c7;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#171412; --fg:#f1ece6; --muted:#a99e93; --panel:#221e1b; --line:#3a332d;
+  --ok:#86efac; --ok-bg:#14361f; --ko:#fca5a5; --ko-bg:#3b1414; --warn:#fcd34d; --warn-bg:#3a2a0b; color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:17px;line-height:1.4;-webkit-tap-highlight-color:transparent}
+header{position:sticky;top:0;z-index:5;background:var(--brand);color:var(--brand-fg);
+  padding:calc(env(safe-area-inset-top,0px) + 10px) 16px 10px;display:flex;align-items:center;gap:10px}
+header .ind{border:0;background:transparent;color:inherit;font-size:26px;padding:0 6px 0 0;line-height:1;cursor:pointer}
+header h1{font-size:18px;margin:0;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rete{font-size:12px;font-weight:700;padding:4px 8px;border-radius:99px;background:rgba(255,255,255,.18);white-space:nowrap}
+.rete.no{background:#facc15;color:#1d1a17}
+main{padding:14px 16px calc(env(safe-area-inset-bottom,0px) + 24px);display:flex;flex-direction:column;gap:12px;max-width:760px;margin:0 auto}
+.sez{display:flex;flex-direction:column;gap:10px}
+h2{font-size:15px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:6px 0 0}
+p{margin:0}
+.muted{color:var(--muted);font-size:15px}
+.voce{display:flex;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:14px;min-height:64px;cursor:pointer;width:100%;text-align:left;font:inherit;color:inherit}
+.voce:active{transform:scale(.99)}
+.voce .t{flex:1;min-width:0}
+.voce .t b{display:block;font-size:18px}
+.voce .t span{display:block;color:var(--muted);font-size:14px}
+.cnt{font-variant-numeric:tabular-nums;font-weight:700;font-size:15px;padding:6px 10px;border-radius:10px;background:var(--line);white-space:nowrap}
+.cnt.tutto{background:var(--ok-bg);color:var(--ok)}
+.cal{display:grid;grid-template-columns:1fr auto;gap:2px 10px;background:var(--panel);border:1px solid var(--line);border-left:8px solid var(--line);
+  border-radius:12px;padding:12px 14px;cursor:pointer;text-align:left;font:inherit;color:inherit;width:100%}
+.cal.fatto{border-left-color:var(--ok)}
+.cal.prob{border-left-color:var(--ko)}
+.cal.altro{border-left-color:#2563eb}
+.cal .loc{font-weight:700;font-size:18px}
+.cal .st{font-size:13px;font-weight:700;justify-self:end;align-self:start}
+.cal .mm{grid-column:1/-1;display:flex;gap:16px;flex-wrap:wrap;font-family:var(--mono);font-size:15px;font-variant-numeric:tabular-nums}
+.cal .mm i{font-style:normal;font-family:var(--sans);font-size:12px;color:var(--muted);display:block}
+.btn{display:flex;align-items:center;justify-content:center;gap:10px;border:0;border-radius:14px;min-height:60px;padding:0 18px;
+  font:inherit;font-weight:700;font-size:18px;cursor:pointer;width:100%}
+.btn.pri{background:var(--brand2);color:var(--brand-fg)}
+.btn.sec{background:var(--panel);color:var(--fg);border:1px solid var(--line)}
+.btn.pic{min-height:46px;font-size:15px}
+.btn:disabled{opacity:.5}
+.foto{position:relative;overflow:hidden}
+.foto input{position:absolute;inset:0;opacity:0;font-size:0;cursor:pointer}
+label.campo{display:flex;flex-direction:column;gap:6px;font-size:15px;color:var(--muted)}
+input.txt{font:inherit;font-size:20px;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--fg);width:100%}
+.esito{border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:8px}
+.esito.ok{background:var(--ok-bg);color:var(--ok)}
+.esito.ko{background:var(--ko-bg);color:var(--ko)}
+.esito.warn{background:var(--warn-bg);color:var(--warn)}
+.esito b.big{font-family:var(--mono);font-size:32px;color:var(--fg);letter-spacing:.03em}
+.esito .tit{font-weight:800;font-size:20px}
+.dett{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;display:grid;grid-template-columns:auto 1fr;gap:6px 14px}
+.dett span{color:var(--muted);font-size:14px}
+.dett b{font-family:var(--mono);font-size:19px;font-variant-numeric:tabular-nums}
+.barra{height:10px;border-radius:99px;background:var(--line);overflow:hidden}
+.barra i{display:block;height:100%;background:var(--ok)}
+.riga{display:flex;gap:10px;flex-wrap:wrap}
+.riga>*{flex:1;min-width:140px}
+.avviso{background:var(--warn-bg);color:var(--warn);border-radius:12px;padding:10px 12px;font-size:15px}
+pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;color:var(--muted);max-height:240px;overflow:auto;margin:0}
+.attesa{display:flex;align-items:center;gap:12px;font-weight:700}
+.attesa::before{content:"";width:22px;height:22px;border-radius:50%;border:3px solid var(--line);border-top-color:var(--brand2);animation:g 1s linear infinite}
+@keyframes g{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.attesa::before{animation:none}}
+</style>
+</head>
+<body>
+<header>
+  <button class="ind" id="indietro" aria-label="Indietro" hidden>&#8249;</button>
+  <h1 id="titolo">BedoMaxCampo</h1>
+  <span class="rete" id="rete">…</span>
+</header>
+<main id="vista"></main>
+
+<script src="zxing-reader.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   BedoMaxCampo 0.1 - Montanari Sicurcalor
+   - lavori caricati dall'ufficio (BedoMaxBanco) nell'archivio GitHub privato "campo-dati"
+   - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
+   - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
+   ===================================================================== */
+const VERSIONE = '0.1.0';
+const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
+const $ = s => document.querySelector(s);
+const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ---------- memoria locale ---------- */
+const mem = {
+  get(k, def) { try { const v = localStorage.getItem('bmcampo:' + k); return v == null ? def : JSON.parse(v); } catch (e) { return def; } },
+  set(k, v) { try { localStorage.setItem('bmcampo:' + k, JSON.stringify(v)); return true; } catch (e) { avviso('Memoria del dispositivo piena o bloccata: ' + e.message); return false; } }
+};
+let cfg = mem.get('cfg', null);           // {dispositivo, token}
+const slug = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'disp';
+const mioFile = () => 'disp-' + slug(cfg.dispositivo) + '.json';
+const percorsoCond = c => 'lavori/' + encodeURIComponent(c);
+
+/* ---------- GitHub ---------- */
+async function gh(metodo, percorso, corpo, raw) {
+  const r = await fetch('https://api.github.com/repos/' + OWNER + '/' + REPO + '/' + percorso, {
+    method: metodo, cache: 'no-store',
+    headers: {'Authorization': 'Bearer ' + cfg.token, 'Accept': raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28'},
+    body: corpo ? JSON.stringify(corpo) : undefined });
+  if (r.status === 404) return {stato: 404, dati: null};
+  if (!r.ok) { let m = ''; try { m = (await r.json()).message; } catch (e) {} throw new Error('GitHub ' + r.status + (m ? ': ' + m : '')); }
+  return {stato: r.status, dati: raw ? await r.text() : await r.json()};
+}
+const b64 = s => btoa(unescape(encodeURIComponent(s)));
+
+/* ---------- stato rete ---------- */
+function aggiornaRete() {
+  const da = Object.values(mem.get('mio', {})).filter(m => m && m.sporco).length;
+  const el = $('#rete');
+  if (!navigator.onLine) { el.textContent = 'SENZA RETE' + (da ? ' · ' + da + ' da inviare' : ''); el.className = 'rete no'; }
+  else { el.textContent = da ? da + ' da inviare' : 'in linea'; el.className = 'rete'; }
+}
+window.addEventListener('online', () => { aggiornaRete(); sincronizzaTutto(); });
+window.addEventListener('offline', aggiornaRete);
+
+/* ---------- dati per condominio ---------- */
+// piano:  {condominio, indirizzo, caricato, righe:[{id, interno, n, locale, vecchia, nuova}]}
+// mio:    {<cond>: {sha, sporco, rec:{<id>: {stato, letto, metodo, ora, nota}}}}
+// altri:  {<cond>: {<file>: {dispositivo, rec:{...}}}}
+const piano = c => mem.get('piano:' + c, null);
+function mieiRec(c) { const m = mem.get('mio', {}); return (m[c] && m[c].rec) || {}; }
+function altriRec(c) { return mem.get('altri:' + c, {}); }
+function salvaRec(c, id, r) {
+  const m = mem.get('mio', {}); m[c] = m[c] || {rec: {}}; m[c].rec[id] = r; m[c].sporco = true; mem.set('mio', m);
+  aggiornaRete(); sincronizza(c).catch(() => {});
+}
+// stato visto da questo dispositivo: il mio record vince, altrimenti quello di un altro dispositivo
+function statoCal(c, id) {
+  const mio = mieiRec(c)[id];
+  const altri = Object.values(altriRec(c)).map(a => a.rec && a.rec[id] ? Object.assign({da: a.dispositivo}, a.rec[id]) : null).filter(Boolean)
+    .filter(x => x.stato !== 'annullato');
+  if (mio && mio.stato !== 'annullato') return {r: mio, mio: true, doppio: altri.length > 0, altri};
+  if (altri.length) return {r: altri[0], mio: false, doppio: altri.length > 1, altri};
+  return null;
+}
+
+/* ---------- sincronizzazione ---------- */
+let inCorso = {};
+async function sincronizza(c) {
+  if (!navigator.onLine || !cfg || inCorso[c]) return;
+  inCorso[c] = true;
+  try {
+    const p = await gh('GET', 'contents/' + percorsoCond(c) + '/piano.json', null, true);
+    if (p.dati) mem.set('piano:' + c, JSON.parse(p.dati));
+    const elenco = await gh('GET', 'contents/' + percorsoCond(c));
+    const files = (elenco.dati || []).filter(f => /^disp-.*\.json$/.test(f.name));
+    const altri = altriRec(c); let mioSha = null;
+    for (const f of files) {
+      if (f.name === mioFile()) { mioSha = f.sha; continue; }
+      if (altri[f.name] && altri[f.name].sha === f.sha) continue;
+      const t = await gh('GET', 'contents/' + percorsoCond(c) + '/' + f.name, null, true);
+      const d = JSON.parse(t.dati); d.sha = f.sha; altri[f.name] = d;
+    }
+    mem.set('altri:' + c, altri);
+    const m = mem.get('mio', {});
+    if (m[c] && m[c].sporco) {
+      const corpo = {dispositivo: cfg.dispositivo, condominio: c, aggiornato: new Date().toISOString(), versione_app: VERSIONE, rec: m[c].rec};
+      const put = await gh('PUT', 'contents/' + percorsoCond(c) + '/' + mioFile(),
+        Object.assign({message: 'campo ' + cfg.dispositivo + ' - ' + c, content: b64(JSON.stringify(corpo, null, 1))}, mioSha ? {sha: mioSha} : {}));
+      const m2 = mem.get('mio', {}); m2[c].sha = put.dati.content.sha;
+      if (JSON.stringify(m2[c].rec) === JSON.stringify(corpo.rec)) m2[c].sporco = false;   // modifiche nel frattempo: resta da inviare
+      mem.set('mio', m2);
+    }
+    mem.set('ultimaSync:' + c, Date.now());
+  } finally { inCorso[c] = false; aggiornaRete(); }
+}
+async function sincronizzaTutto() {
+  if (!navigator.onLine || !cfg) return;
+  try {
+    const e = await gh('GET', 'contents/lavori/elenco.json', null, true);
+    if (e.dati) mem.set('elenco', JSON.parse(e.dati));
+  } catch (err) { console.warn(err); }
+  for (const c of Object.keys(mem.get('mio', {}))) { try { await sincronizza(c); } catch (err) { console.warn(err); } }
+  if (vistaAttuale && vistaAttuale.ridisegna) vistaAttuale.ridisegna();
+}
+setInterval(() => { if (document.visibilityState === 'visible') sincronizzaTutto(); }, 90000);
+
+/* ---------- lettore etichetta (zxing-cpp WebAssembly, funziona offline) ---------- */
+let motore = null;
+function preparaMotore() {
+  if (!motore) motore = fetch('zxing_reader.wasm').then(r => { if (!r.ok) throw new Error('motore HTTP ' + r.status); return r.arrayBuffer(); })
+    .then(buf => ZXingWASM.prepareZXingModule({overrides: {wasmBinary: buf}, fireImmediately: true}))
+    .catch(e => { motore = null; throw e; });
+  return motore;
+}
+function matricolaDa(testo) {
+  const t = String(testo), ds = t.match(/43S(\d{8})/);       // Data Matrix Siemens: ...+43S<matricola>
+  if (ds) return ds[1];
+  const s = t.replace(/\s/g, '');
+  return /^\d{8}$/.test(s) ? s : null;                       // codice a barre: le sole 8 cifre
+}
+async function leggiEtichetta(file) {
+  await preparaMotore();
+  const opz = {tryHarder: true, formats: ['DataMatrix', 'Code128', 'ITF', 'Code39'], maxNumberOfSymbols: 4};
+  let ris = (await ZXingWASM.readBarcodes(file, opz)).filter(r => r.isValid);
+  if (!ris.length) {   // seconda prova: foto ridotta (a volte aiuta con le foto molto grandi)
+    const img = await createImageBitmap(file); const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+    const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    const g = c.getContext('2d'); g.drawImage(img, 0, 0, c.width, c.height);
+    ris = (await ZXingWASM.readBarcodes(g.getImageData(0, 0, c.width, c.height), opz)).filter(r => r.isValid);
+  }
+  const matr = [...new Set(ris.map(r => matricolaDa(r.text)).filter(Boolean))];
+  return {matr, codici: ris.map(r => r.format + ': ' + r.text)};
+}
+
+/* ---------- viste ---------- */
+let vistaAttuale = null, pila = [];
+function vai(v, ...arg) { pila.push([v, arg]); mostra(v, arg); }
+function indietro() { pila.pop(); const [v, arg] = pila[pila.length - 1] || [vistaLavori, []]; mostra(v, arg); }
+function mostra(v, arg) {
+  vistaAttuale = v(...arg) || null; $('#indietro').hidden = pila.length <= 1; window.scrollTo(0, 0); aggiornaRete();
+}
+$('#indietro').addEventListener('click', indietro);
+function avviso(t) { const d = document.createElement('div'); d.className = 'avviso'; d.textContent = t; $('#vista').prepend(d); }
+
+function vistaSetup() {
+  $('#titolo').textContent = 'Configura dispositivo';
+  $('#vista').innerHTML = `
+    <div class="sez">
+      <p>Questo dispositivo va configurato una volta sola. Nome e chiave restano salvati qui dentro.</p>
+      <label class="campo" for="nome">Nome del dispositivo (es. Tablet 1, Telefono Bedo)
+        <input class="txt" id="nome" autocomplete="off" value="${esc(cfg ? cfg.dispositivo : '')}"></label>
+      <label class="campo" for="chiave">Chiave di accesso all'archivio (fornita dall'ufficio)
+        <input class="txt" id="chiave" type="password" autocomplete="off" value="${esc(cfg ? cfg.token : '')}"></label>
+      <button class="btn pri" id="salva">Salva e prova il collegamento</button>
+      <div id="esitoSetup"></div>
+      <p class="muted">BedoMaxCampo ${VERSIONE} · archivio ${OWNER}/${REPO}</p>
+    </div>`;
+  $('#salva').onclick = async () => {
+    const nome = $('#nome').value.trim(), tok = $('#chiave').value.trim(), out = $('#esitoSetup');
+    if (!nome || !tok) { out.innerHTML = '<div class="esito ko"><span class="tit">Scrivi il nome e la chiave.</span></div>'; return; }
+    cfg = {dispositivo: nome, token: tok}; mem.set('cfg', cfg);
+    out.innerHTML = '<div class="attesa">Provo il collegamento…</div>';
+    try {
+      const e = await gh('GET', 'contents/lavori/elenco.json', null, true);
+      mem.set('elenco', e.dati ? JSON.parse(e.dati) : []);
+      out.innerHTML = '<div class="esito ok"><span class="tit">Collegato all’archivio.</span></div>';
+      setTimeout(() => { pila = []; vai(vistaLavori); }, 700);
+    } catch (err) {
+      out.innerHTML = '<div class="esito ko"><span class="tit">Collegamento non riuscito</span>' + esc(err.message) +
+        '<br>Controlla la chiave. Se sei senza rete puoi comunque proseguire.</div><button class="btn sec" id="prosegui">Prosegui senza provare</button>';
+      $('#prosegui').onclick = () => { pila = []; vai(vistaLavori); };
+    }
+  };
+}
+
+function vistaLavori() {
+  $('#titolo').textContent = 'BedoMaxCampo';
+  const disegna = () => {
+    const el = mem.get('elenco', []);
+    $('#vista').innerHTML = `
+      <div class="sez"><h2>Lavori assegnati</h2><div id="lista" class="sez"></div></div>
+      <button class="btn sec pic" id="agg">Aggiorna elenco</button>
+      <button class="btn sec pic" id="conf">Dispositivo: ${esc(cfg.dispositivo)} · cambia</button>
+      <p class="muted">BedoMaxCampo ${VERSIONE}</p>`;
+    const lista = $('#lista');
+    if (!el.length) lista.innerHTML = '<p class="muted">Nessun lavoro. Quando l’ufficio carica un condominio da BedoMaxBanco compare qui (serve la rete la prima volta).</p>';
+    el.forEach(l => {
+      const p = piano(l.condominio); const tot = p ? p.righe.length : l.ripartitori;
+      const fatti = p ? p.righe.filter(r => statoCal(l.condominio, r.id)).length : 0;
+      const b = document.createElement('button'); b.className = 'voce';
+      b.innerHTML = `<div class="t"><b>${esc(l.condominio)}</b><span>${esc(l.indirizzo || '')}${p ? '' : ' · da scaricare'}</span></div>
+        <span class="cnt ${tot && fatti === tot ? 'tutto' : ''}">${fatti}/${tot}</span>`;
+      b.onclick = async () => {
+        if (!piano(l.condominio)) {
+          b.querySelector('span').textContent = 'scarico…';
+          try { const m = mem.get('mio', {}); m[l.condominio] = m[l.condominio] || {rec: {}}; mem.set('mio', m); await sincronizza(l.condominio); }
+          catch (err) { avviso('Non riesco a scaricare il lavoro: ' + err.message); return; }
+        }
+        if (piano(l.condominio)) vai(vistaCondominio, l.condominio); else avviso('Lavoro non ancora scaricato: serve la rete.');
+      };
+      lista.appendChild(b);
+    });
+    $('#agg').onclick = async () => { $('#agg').textContent = 'Aggiorno…'; await sincronizzaTutto(); disegna(); };
+    $('#conf').onclick = () => vai(vistaSetup);
+  };
+  disegna();
+  return {ridisegna: disegna};
+}
+
+function vistaCondominio(c) {
+  $('#titolo').textContent = c;
+  const disegna = () => {
+    const p = piano(c); if (!p) return;
+    const interni = []; const idx = {};
+    p.righe.forEach(r => { if (!(r.interno in idx)) { idx[r.interno] = interni.length; interni.push({interno: r.interno, righe: []}); } interni[idx[r.interno]].righe.push(r); });
+    const tot = p.righe.length, fatti = p.righe.filter(r => statoCal(c, r.id)).length;
+    const us = mem.get('ultimaSync:' + c, 0);
+    $('#vista').innerHTML = `
+      <div class="sez">
+        <p class="muted">${esc(p.indirizzo || '')}</p>
+        <div class="barra"><i style="width:${tot ? Math.round(100 * fatti / tot) : 0}%"></i></div>
+        <p><b>${fatti}</b> su <b>${tot}</b> ripartitori sostituiti · aggiornato ${us ? new Date(us).toLocaleTimeString('it-IT', {hour: '2-digit', minute: '2-digit'}) : 'mai'}</p>
+      </div>
+      <div class="sez" id="int"></div>
+      <button class="btn sec pic" id="sync">Sincronizza adesso</button>`;
+    interni.forEach(i => {
+      const f = i.righe.filter(r => statoCal(c, r.id)).length;
+      const pr = i.righe.some(r => { const s = statoCal(c, r.id); return s && (s.r.stato === 'problema' || s.doppio); });
+      const b = document.createElement('button'); b.className = 'voce';
+      b.innerHTML = `<div class="t"><b>Interno ${esc(i.interno)}</b><span>${i.righe.map(r => esc(r.locale)).join(', ')}</span></div>
+        <span class="cnt ${f === i.righe.length ? 'tutto' : ''}">${pr ? '⚠ ' : ''}${f}/${i.righe.length}</span>`;
+      b.onclick = () => vai(vistaInterno, c, i.interno);
+      $('#int').appendChild(b);
+    });
+    $('#sync').onclick = async () => { $('#sync').textContent = 'Sincronizzo…'; try { await sincronizza(c); } catch (e) { avviso(e.message); } disegna(); };
+  };
+  disegna(); sincronizza(c).then(disegna).catch(() => {});
+  return {ridisegna: disegna};
+}
+
+function vistaInterno(c, interno) {
+  $('#titolo').textContent = c + ' · int. ' + interno;
+  const disegna = () => {
+    const righe = piano(c).righe.filter(r => r.interno === interno);
+    $('#vista').innerHTML = '<div class="sez" id="cal"></div><p class="muted">Tocca un calorifero per fotografare il ripartitore nuovo montato.</p>';
+    righe.forEach(r => {
+      const s = statoCal(c, r.id);
+      const cls = !s ? '' : (s.r.stato === 'problema' || s.doppio) ? 'prob' : s.mio ? 'fatto' : 'altro';
+      const st = !s ? 'da fare' : s.r.stato === 'problema' ? 'PROBLEMA' : s.doppio ? 'DOPPIO' : s.mio ? 'fatto ✓' : 'fatto da ' + s.r.da;
+      const b = document.createElement('button'); b.className = 'cal ' + cls;
+      b.innerHTML = `<span class="loc">${r.n}. ${esc(r.locale)}</span><span class="st">${esc(st)}</span>
+        <span class="mm"><span><i>togli</i>${esc(r.vecchia)}</span><span><i>monta</i><b>${esc(r.nuova)}</b></span></span>`;
+      b.onclick = () => vai(vistaCalorifero, c, r.id);
+      $('#cal').appendChild(b);
+    });
+  };
+  disegna();
+  return {ridisegna: disegna};
+}
+
+function vistaCalorifero(c, id) {
+  const p = piano(c), r = p.righe.find(x => x.id === id);
+  $('#titolo').textContent = 'Int. ' + r.interno + ' · ' + r.locale;
+  const disegna = (esitoHtml) => {
+    const s = statoCal(c, id);
+    $('#vista').innerHTML = `
+      <div class="dett">
+        <span>Calorifero</span><b style="font-family:var(--sans)">${r.n}. ${esc(r.locale)}</b>
+        <span>Togli il vecchio</span><b>${esc(r.vecchia)}</b>
+        <span>Monta il nuovo</span><b>${esc(r.nuova)}</b>
+      </div>
+      ${s ? `<div class="esito ${s.r.stato === 'problema' || s.doppio ? 'ko' : 'ok'}"><span class="tit">${s.r.stato === 'problema' ? 'Segnato con PROBLEMA' : 'Già sostituito'}${s.mio ? '' : ' da ' + esc(s.r.da)}</span>
+        letto ${esc(s.r.letto || '-')} · ${s.r.metodo === 'manuale' ? 'inserito a mano' : 'da foto'} · ${new Date(s.r.ora).toLocaleString('it-IT')}
+        ${s.r.nota ? '<br>' + esc(s.r.nota) : ''}${s.doppio ? '<br><b>Attenzione: risulta fatto anche da ' + esc(s.altri.map(a => a.da).join(', ')) + '</b>' : ''}</div>` : ''}
+      <div id="esito">${esitoHtml || ''}</div>
+      <label class="btn pri foto" for="scatto">Fotografa il ripartitore nuovo montato
+        <input id="scatto" type="file" accept="image/*" capture="environment"></label>
+      <button class="btn sec pic" id="mano">Etichetta illeggibile: scrivi la matricola</button>
+      ${s && s.mio ? '<button class="btn sec pic" id="annulla">Annulla questa sostituzione</button>' : ''}`;
+    $('#scatto').onchange = async e => {
+      const f = e.target.files && e.target.files[0]; if (!f) return;
+      $('#esito').innerHTML = '<div class="attesa">Leggo l’etichetta…</div>';
+      try { const l = await leggiEtichetta(f); valuta(l.matr, 'foto', l.codici); }
+      catch (err) { $('#esito').innerHTML = '<div class="esito ko"><span class="tit">Errore del lettore</span>' + esc(err.message) + '</div>'; }
+    };
+    $('#mano').onclick = () => {
+      $('#esito').innerHTML = `<div class="sez"><label class="campo" for="mm">Matricola del ripartitore montato (8 cifre)
+        <input class="txt" id="mm" inputmode="numeric" maxlength="8" autocomplete="off"></label>
+        <button class="btn pri pic" id="ok">Controlla</button></div>`;
+      $('#mm').focus();
+      $('#ok').onclick = () => { const v = $('#mm').value.replace(/\D/g, ''); if (v.length !== 8) { $('#mm').focus(); return; } valuta([v], 'manuale', []); };
+    };
+    if ($('#annulla')) $('#annulla').onclick = () => {
+      $('#esito').innerHTML = '<div class="esito warn"><span class="tit">Annullare la sostituzione registrata?</span><div class="riga"><button class="btn sec pic" id="no">No</button><button class="btn pri pic" id="si">Sì, annulla</button></div></div>';
+      $('#no').onclick = () => disegna(); $('#si').onclick = () => { salvaRec(c, id, {stato: 'annullato', ora: new Date().toISOString()}); disegna(); };
+    };
+  };
+  function valuta(matr, metodo, codici) {
+    const out = $('#esito');
+    if (!matr.length) {
+      out.innerHTML = '<div class="esito ko"><span class="tit">Nessuna matricola letta</span>Rifai la foto più vicino, a fuoco e senza riflessi.' +
+        (codici.length ? '<br><small>' + esc(codici.join(' | ')) + '</small>' : '') + '</div>';
+      return;
+    }
+    const m = matr.includes(r.nuova) ? r.nuova : matr[0];
+    if (m === r.nuova) {
+      salvaRec(c, id, {stato: 'posato', letto: m, metodo, ora: new Date().toISOString(), nota: ''});
+      if (navigator.vibrate) navigator.vibrate(80);
+      disegna(`<div class="esito ok"><span class="tit">Giusto ✓ registrato</span><b class="big">${esc(m)}</b><span>è il ripartitore previsto per questo calorifero.</span></div>`);
+      return;
+    }
+    if (navigator.vibrate) navigator.vibrate([300, 120, 300]);
+    const altro = p.righe.find(x => x.nuova === m);
+    const vecchio = p.righe.find(x => x.vecchia === m);
+    let msg = '';
+    if (altro) msg = `Questo è il ripartitore preparato per <b>int. ${esc(altro.interno)} · ${esc(altro.locale)}</b>. Prendi quello giusto: ${esc(r.nuova)}.`;
+    else if (m === r.vecchia) msg = 'Hai fotografato il ripartitore VECCHIO. Fotografa quello nuovo montato.';
+    else if (vecchio) msg = `È un ripartitore VECCHIO (int. ${esc(vecchio.interno)} · ${esc(vecchio.locale)}).`;
+    else msg = 'Questa matricola non è nel lavoro di questo condominio.';
+    out.innerHTML = `<div class="esito ko"><span class="tit">SBAGLIATO ✗</span><b class="big">${esc(m)}</b><span>${msg}</span>
+      <div class="riga"><button class="btn sec pic" id="forza">Montato comunque: segna PROBLEMA</button></div></div>`;
+    $('#forza').onclick = () => {
+      salvaRec(c, id, {stato: 'problema', letto: m, metodo, ora: new Date().toISOString(), nota: 'montato ' + m + ' invece di ' + r.nuova});
+      disegna('<div class="esito warn"><span class="tit">Segnato con PROBLEMA</span>L’ufficio vedrà la differenza.</div>');
+    };
+  }
+  disegna();
+  return {ridisegna: () => {}};
+}
+
+/* ---------- avvio ---------- */
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(e => console.warn('sw', e));
+preparaMotore().catch(e => console.warn('motore', e));
+aggiornaRete();
+if (!cfg) vai(vistaSetup); else { vai(vistaLavori); sincronizzaTutto(); }
+</script>
+</body>
+</html>
