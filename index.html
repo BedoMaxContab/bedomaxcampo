@@ -108,7 +108,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.3.0';
+const VERSIONE = '0.4.0';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -490,13 +490,22 @@ function vistaCalorifero(c, id) {
       </div>
       ${s ? `<div class="esito ${s.r.stato === 'problema' || s.doppio ? 'ko' : 'ok'}"><span class="tit">${s.r.stato === 'problema' ? 'Segnato con PROBLEMA' : 'Già sostituito'}${s.mio ? '' : ' da ' + esc(s.r.da)}</span>
         letto ${esc(s.r.letto || '-')} · ${s.r.metodo === 'manuale' ? 'inserito a mano' : s.r.metodo && s.r.metodo.startsWith('numero') ? 'dal numero stampato' + (s.r.metodo.includes('conf') ? ' (confermato)' : '') : 'letto dalla fotocamera'} · ${new Date(s.r.ora).toLocaleString('it-IT')}
+        ${s.r.vecchio_ok === false ? '<br>⚠ vecchio non verificato: ' + esc(s.r.vecchio_nota || '') : s.r.vecchio_ok ? '<br>vecchio verificato ' + esc(s.r.vecchio_letto || '') : ''}
         ${s.r.nota ? '<br>' + esc(s.r.nota) : ''}${s.doppio ? '<br><b>Attenzione: risulta fatto anche da ' + esc(s.altri.map(a => a.da).join(', ')) + '</b>' : ''}</div>` : ''}
       <div id="esito">${esitoHtml || ''}</div>
-      <button class="btn pri" id="inquadra">📷 Inquadra il ripartitore nuovo montato</button>
+      ${!s && !p1() ? `<div class="esito warn"><span class="tit">1° passo: il VECCHIO</span>Prima di toglierlo, inquadra il ripartitore VECCHIO ancora montato su questo calorifero (deve essere ${esc(r.vecchia)}).</div>
+      <button class="btn pri" id="inqV">📷 Inquadra il ripartitore VECCHIO</button>
+      <button class="btn sec pic" id="manoV">⌨ Scrivi la matricola del vecchio</button>
+      <button class="btn sec pic" id="saltaV">Il vecchio manca o è illeggibile</button>` : `
+      ${!s ? `<div class="esito ${p1().saltato ? 'warn' : 'ok'}"><span class="tit">1° passo ${p1().saltato ? '⚠ vecchio NON verificato' : '✓ vecchio verificato'}</span>${p1().saltato ? esc(p1().motivo) + ' — l\u2019ufficio dovrà controllare' : esc(p1().letto) + ' è il ripartitore di questo calorifero: ora toglilo e monta il nuovo'}</div>` : ''}
+      <button class="btn pri" id="inquadra">📷 ${s ? 'Inquadra il ripartitore nuovo montato' : '2° passo: inquadra il NUOVO montato'}</button>
       <label class="btn sec pic foto" for="scatto">Scatta una foto (se l'inquadratura non legge)
         <input id="scatto" type="file" accept="image/*" capture="environment"></label>
       <button class="btn sec" id="mano" style="flex-direction:column;gap:2px;padding-block:8px">⌨ Scrivi la matricola a mano<small style="font-weight:400;font-size:14px">fotocamera guasta o etichetta illeggibile</small></button>
-      ${s && s.mio ? '<button class="btn sec pic" id="annulla">Annulla questa sostituzione</button>' : ''}`;
+      ${s && s.mio ? '<button class="btn sec pic" id="annulla">Annulla questa sostituzione</button>' : ''}`}
+      ${!s && p1() ? '<button class="btn sec pic" id="rifaiV">Rifai il 1° passo (vecchio)</button>' : ''}`;
+    if ($('#inqV')) { passo1Comandi(); return; }
+    if ($('#rifaiV')) $('#rifaiV').onclick = () => { mem.set(kP1, null); disegna(); };
     $('#scatto').onchange = async e => {
       const f = e.target.files && e.target.files[0]; if (!f) return;
       $('#esito').innerHTML = '<div class="attesa">Leggo l’etichetta…</div>';
@@ -547,6 +556,49 @@ function vistaCalorifero(c, id) {
       $('#no').onclick = () => disegna(); una($('#si'), () => { salvaRec(c, id, {stato: 'annullato', ora: new Date().toISOString()}); disegna(); });
     };
   };
+  const kP1 = 'vecchio:' + c + ':' + id;
+  const p1 = () => mem.get(kP1, null);
+  function passo1Comandi() {
+    una($('#inqV'), async () => {
+      try {
+        const res = await apriScanner(r.vecchia, p.righe.flatMap(y => [y.nuova, y.vecchia]));
+        if (res) valutaVecchio(res.matr, res.metodo);
+      } catch (err) { $('#esito').innerHTML = '<div class="esito ko"><span class="tit">Fotocamera non disponibile</span>' + esc(err.message || err) + '</div>'; }
+    });
+    $('#manoV').onclick = () => {
+      $('#esito').innerHTML = `<div class="sez"><label class="campo" for="mv">Matricola del ripartitore VECCHIO (8 cifre)
+        <input class="txt" id="mv" inputmode="numeric" maxlength="8" autocomplete="off"></label><button class="btn pri pic" id="okv">Controlla</button></div>`;
+      $('#mv').focus();
+      una($('#okv'), () => { const v = $('#mv').value.replace(/\D/g, ''); if (v.length !== 8) { $('#mv').focus(); return; } valutaVecchio([v], 'manuale'); });
+    };
+    $('#saltaV').onclick = () => {
+      $('#esito').innerHTML = `<div class="esito warn"><span class="tit">Perché non si può verificare il vecchio?</span>
+        <div class="sez"><button class="btn sec pic" data-m="ripartitore vecchio MANCANTE sul calorifero">Manca, non c'è</button>
+        <button class="btn sec pic" data-m="etichetta del vecchio ILLEGGIBILE">Etichetta illeggibile</button>
+        <button class="btn sec pic" data-m="ripartitore vecchio ROTTO o staccato">Rotto o staccato</button></div></div>`;
+      document.querySelectorAll('#esito [data-m]').forEach(b => b.onclick = () => { mem.set(kP1, {saltato: true, motivo: b.dataset.m, ora: new Date().toISOString()}); disegna(); });
+    };
+  }
+  function valutaVecchio(matr, metodo) {
+    if (matr.includes(r.vecchia)) {
+      mem.set(kP1, {letto: r.vecchia, metodo, ora: new Date().toISOString()});
+      if (navigator.vibrate) navigator.vibrate(80);
+      disegna(); return;
+    }
+    const m = matr[0]; if (navigator.vibrate) navigator.vibrate([300, 120, 300]);
+    const suo = p.righe.find(x => x.vecchia === m), nuovo = p.righe.find(x => x.nuova === m);
+    let msg = 'Questa matricola non è nel lavoro di questo condominio: controlla di essere nell\u2019appartamento giusto.';
+    if (suo) msg = `Questo è il vecchio di <b>int. ${esc(suo.interno)} · ${esc(suo.locale)}</b>: sei sul calorifero sbagliato.`;
+    else if (nuovo) msg = 'Questo è un ripartitore NUOVO: inquadra quello vecchio ancora montato.';
+    $('#esito').innerHTML = `<div class="esito ko"><span class="tit">VECCHIO SBAGLIATO ✗</span><b class="big">${esc(m)}</b><span>${msg}</span>
+      ${suo && suo.id !== id ? '<button class="btn pri pic" id="vaiAltro">Vai a int. ' + esc(suo.interno) + ' · ' + esc(suo.locale) + '</button>' : ''}</div>`;
+    if ($('#vaiAltro')) $('#vaiAltro').onclick = () => { pila.pop(); vai(vistaCalorifero, c, suo.id); };
+  }
+  function datiVecchio() {
+    const v = p1();
+    if (!v) return {vecchio_ok: false, vecchio_nota: 'passo del vecchio non fatto'};
+    return v.saltato ? {vecchio_ok: false, vecchio_nota: v.motivo} : {vecchio_ok: true, vecchio_letto: v.letto, vecchio_metodo: v.metodo};
+  }
   function valuta(matr, metodo, codici) {
     const out = $('#esito');
     if (!matr.length) {
@@ -558,7 +610,8 @@ function vistaCalorifero(c, id) {
     }
     const m = matr.includes(r.nuova) ? r.nuova : matr[0];
     if (m === r.nuova) {
-      salvaRec(c, id, {stato: 'posato', letto: m, metodo, ora: new Date().toISOString(), nota: ''});
+      salvaRec(c, id, Object.assign({stato: 'posato', letto: m, metodo, ora: new Date().toISOString(), nota: ''}, datiVecchio()));
+      mem.set(kP1, null);
       if (navigator.vibrate) navigator.vibrate(80);
       disegna(`<div class="esito ok"><span class="tit">Giusto ✓ registrato</span><b class="big">${esc(m)}</b><span>è il ripartitore previsto per questo calorifero.</span></div>`);
       return;
@@ -574,7 +627,8 @@ function vistaCalorifero(c, id) {
     out.innerHTML = `<div class="esito ko"><span class="tit">SBAGLIATO ✗</span><b class="big">${esc(m)}</b><span>${msg}</span>
       <div class="riga"><button class="btn sec pic" id="forza">Montato comunque: segna PROBLEMA</button></div></div>`;
     una($('#forza'), () => {
-      salvaRec(c, id, {stato: 'problema', letto: m, metodo, ora: new Date().toISOString(), nota: 'montato ' + m + ' invece di ' + r.nuova});
+      salvaRec(c, id, Object.assign({stato: 'problema', letto: m, metodo, ora: new Date().toISOString(), nota: 'montato ' + m + ' invece di ' + r.nuova}, datiVecchio()));
+      mem.set(kP1, null);
       disegna('<div class="esito warn"><span class="tit">Segnato con PROBLEMA</span>L’ufficio vedrà la differenza.</div>');
     });
   }
