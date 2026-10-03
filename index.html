@@ -26,7 +26,9 @@ html,body{margin:0;height:100%}
 body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:17px;line-height:1.4;-webkit-tap-highlight-color:transparent}
 header{position:sticky;top:0;z-index:5;background:var(--brand);color:var(--brand-fg);
   padding:calc(env(safe-area-inset-top,0px) + 10px) 16px 10px;display:flex;align-items:center;gap:10px}
-header .ind{border:0;background:transparent;color:inherit;font-size:26px;padding:0 6px 0 0;line-height:1;cursor:pointer}
+header .ind{border:0;background:rgba(255,255,255,.2);color:inherit;font:inherit;font-weight:700;font-size:16px;padding:8px 12px;border-radius:10px;line-height:1;cursor:pointer;white-space:nowrap}
+.aiuto{background:var(--panel);border:1px dashed var(--brand2);border-radius:12px;padding:10px 12px;font-size:15px}
+.aiuto b{color:var(--brand2)}
 header h1{font-size:18px;margin:0;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .rete{font-size:12px;font-weight:700;padding:4px 8px;border-radius:99px;background:rgba(255,255,255,.18);white-space:nowrap}
 .rete.no{background:#facc15;color:#1d1a17}
@@ -92,7 +94,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
 </head>
 <body>
 <header>
-  <button class="ind" id="indietro" aria-label="Indietro" hidden>&#8249;</button>
+  <button class="ind" id="indietro" aria-label="Indietro" hidden>&#8249; Indietro</button>
   <h1 id="titolo">BedoMaxCampo</h1>
   <span class="rete" id="rete">…</span>
 </header>
@@ -108,7 +110,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.4.1';
+const VERSIONE = '0.5.0';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -359,6 +361,26 @@ function una(el, fn) {
     try { await fn(ev); } finally { setTimeout(() => { delete el.dataset.occ; el.disabled = false; }, 1500); }
   };
 }
+// prossimo calorifero ancora da fare (nell'ordine del piano, dopo quello attuale)
+function prossimoDaFare(c, id) {
+  const rr = piano(c).righe; const i = rr.findIndex(x => x.id === id);
+  for (let k = 1; k <= rr.length; k++) { const x = rr[(i + k) % rr.length]; if (x.id !== id && !statoCal(c, x.id)) return x; }
+  return null;
+}
+// apre il calorifero x tenendo giusto il tasto Indietro (condominio > interno > calorifero)
+function apriCalorifero(c, x, daCalorifero) {
+  if (daCalorifero) pila.pop();
+  const top = pila[pila.length - 1];
+  if (!(top && top[0] === vistaInterno && top[1][1] === x.interno)) {
+    if (top && top[0] === vistaInterno) pila.pop();
+    pila.push([vistaInterno, [c, x.interno]]);
+  }
+  vai(vistaCalorifero, c, x.id);
+}
+function tornaA(vista) {
+  while (pila.length > 1 && pila[pila.length - 1][0] !== vista) pila.pop();
+  const [v, arg] = pila[pila.length - 1]; mostra(v, arg);
+}
 function avviso(t) { const d = document.createElement('div'); d.className = 'avviso'; d.textContent = t; $('#vista').prepend(d); }
 
 function vistaSetup() {
@@ -397,6 +419,7 @@ function vistaLavori() {
   const disegna = () => {
     const el = mem.get('elenco', []);
     $('#vista').innerHTML = `
+      <div class="aiuto"><b>Come si comincia:</b> tocca il condominio dove lavori oggi. La prima volta serve la rete per scaricarlo, poi l’app funziona anche senza campo.</div>
       <div class="sez"><h2>Condomini assegnati</h2><div id="lista" class="sez"></div></div>
       <button class="btn sec pic" id="agg">Aggiorna elenco</button>
       <button class="btn sec pic" id="conf">Dispositivo: ${esc(cfg.dispositivo)} · cambia</button>
@@ -434,14 +457,18 @@ function vistaCondominio(c) {
     p.righe.forEach(r => { if (!(r.interno in idx)) { idx[r.interno] = interni.length; interni.push({interno: r.interno, righe: []}); } interni[idx[r.interno]].righe.push(r); });
     const tot = p.righe.length, fatti = p.righe.filter(r => statoCal(c, r.id)).length;
     const us = mem.get('ultimaSync:' + c, 0);
+    const primo = p.righe.find(r => !statoCal(c, r.id));
     $('#vista').innerHTML = `
       <div class="sez">
         <p><b>${esc(p.indirizzo || '')}</b>${p.amministratore ? ' · Amministratore: ' + esc(p.amministratore) : ''}</p>
         <div class="barra"><i style="width:${tot ? Math.round(100 * fatti / tot) : 0}%"></i></div>
         <p><b>${fatti}</b> su <b>${tot}</b> ripartitori sostituiti · aggiornato ${us ? new Date(us).toLocaleTimeString('it-IT', {hour: '2-digit', minute: '2-digit'}) : 'mai'}</p>
       </div>
+      ${primo ? `<button class="btn pri" id="cont" style="flex-direction:column;gap:2px;padding-block:8px">▶ ${fatti ? 'Continua da dove eri' : 'Inizia dal primo'}<small style="font-weight:400;font-size:15px">int. ${esc(primo.interno)} · ${primo.n}. ${esc(primo.locale)}</small></button>
+      <h2>oppure scegli l’appartamento</h2>` : `<div class="esito ok"><span class="tit">Tutti i ripartitori sono stati sostituiti ✓</span></div><h2>Appartamenti</h2>`}
       <div class="sez" id="int"></div>
       <button class="btn sec pic" id="sync">Sincronizza adesso</button>`;
+    if ($('#cont')) $('#cont').onclick = () => apriCalorifero(c, primo, false);
     interni.forEach(i => {
       const f = i.righe.filter(r => statoCal(c, r.id)).length;
       const pr = i.righe.some(r => { const s = statoCal(c, r.id); return s && (s.r.stato === 'problema' || s.doppio); });
@@ -461,7 +488,7 @@ function vistaInterno(c, interno) {
   $('#titolo').textContent = c + ' · int. ' + interno;
   const disegna = () => {
     const righe = piano(c).righe.filter(r => r.interno === interno);
-    $('#vista').innerHTML = '<div class="sez" id="cal"></div><p class="muted">Tocca un calorifero per fotografare il ripartitore nuovo montato.</p>';
+    $('#vista').innerHTML = '<div class="aiuto"><b>Tocca il calorifero su cui lavori.</b> Per ognuno: <b>1°</b> inquadra il VECCHIO ancora montato · <b>2°</b> toglilo e monta il NUOVO · <b>3°</b> inquadra il NUOVO. Poi “Avanti” ti porta al prossimo.</div><div class="sez" id="cal"></div>';
     righe.forEach(r => {
       const s = statoCal(c, r.id);
       const cls = !s ? '' : (s.r.stato === 'problema' || s.doppio) ? 'prob' : s.mio ? 'fatto' : 'altro';
@@ -493,17 +520,19 @@ function vistaCalorifero(c, id) {
         ${s.r.vecchio_ok === false ? '<br>⚠ vecchio non verificato: ' + esc(s.r.vecchio_nota || '') : s.r.vecchio_ok ? '<br>vecchio verificato ' + esc(s.r.vecchio_letto || '') : ''}
         ${s.r.nota ? '<br>' + esc(s.r.nota) : ''}${s.doppio ? '<br><b>Attenzione: risulta fatto anche da ' + esc(s.altri.map(a => a.da).join(', ')) + '</b>' : ''}</div>` : ''}
       <div id="esito">${esitoHtml || ''}</div>
+      ${s ? dopoHtml() : ''}
       ${!s && !p1() ? `<div class="esito warn"><span class="tit">1° passo: il VECCHIO</span>Prima di toglierlo, inquadra il ripartitore VECCHIO ancora montato su questo calorifero (deve essere ${esc(r.vecchia)}).</div>
       <button class="btn pri" id="inqV">📷 Inquadra il ripartitore VECCHIO</button>
       <button class="btn sec pic" id="manoV">⌨ Scrivi la matricola del vecchio</button>
       <button class="btn sec pic" id="saltaV">Il vecchio manca o è illeggibile</button>` : `
       ${!s ? `<div class="esito ${p1().saltato ? 'warn' : 'ok'}"><span class="tit">1° passo ${p1().saltato ? '⚠ vecchio NON verificato' : '✓ vecchio verificato'}</span>${p1().saltato ? esc(p1().motivo) + ' — l\u2019ufficio dovrà controllare' : esc(p1().letto) + ' è il ripartitore di questo calorifero: ora toglilo e monta il nuovo'}</div>` : ''}
-      <button class="btn pri" id="inquadra">📷 ${s ? 'Inquadra il ripartitore nuovo montato' : '2° passo: inquadra il NUOVO montato'}</button>
+      <button class="btn ${s ? 'sec' : 'pri'}" id="inquadra">📷 ${s ? 'Rileggi il ripartitore nuovo montato' : '2° passo: inquadra il NUOVO montato'}</button>
       <label class="btn sec pic foto" for="scatto">Scatta una foto (se l'inquadratura non legge)
         <input id="scatto" type="file" accept="image/*" capture="environment"></label>
       <button class="btn sec" id="mano" style="flex-direction:column;gap:2px;padding-block:8px">⌨ Scrivi la matricola a mano<small style="font-weight:400;font-size:14px">fotocamera guasta o etichetta illeggibile</small></button>
       ${s && s.mio ? '<button class="btn sec pic" id="annulla">Annulla questa sostituzione</button>' : ''}`}
       ${!s && p1() ? '<button class="btn sec pic" id="rifaiV">Rifai il 1° passo (vecchio)</button>' : ''}`;
+    if (s) collegaDopo();
     if ($('#inqV')) { passo1Comandi(); return; }
     if ($('#rifaiV')) $('#rifaiV').onclick = () => { mem.set(kP1, null); disegna(); };
     $('#scatto').onchange = async e => {
@@ -556,6 +585,18 @@ function vistaCalorifero(c, id) {
       $('#no').onclick = () => disegna(); una($('#si'), () => { salvaRec(c, id, {stato: 'annullato', ora: new Date().toISOString()}); disegna(); });
     };
   };
+  function dopoHtml() {
+    const nx = prossimoDaFare(c, id);
+    return (nx ? `<button class="btn pri" id="avanti" style="flex-direction:column;gap:2px;padding-block:8px">Avanti ➜ prossimo calorifero<small style="font-weight:400;font-size:15px">int. ${esc(nx.interno)} · ${nx.n}. ${esc(nx.locale)}</small></button>`
+      : '<div class="esito ok"><span class="tit">Condominio finito: tutti i ripartitori sono stati sostituiti ✓</span></div>') +
+      `<div class="riga"><button class="btn sec pic" id="aInt">↩ Caloriferi int. ${esc(r.interno)}</button><button class="btn sec pic" id="aCond">↩ Condominio</button></div>`;
+  }
+  function collegaDopo() {
+    const nx = prossimoDaFare(c, id);
+    if ($('#avanti') && nx) $('#avanti').onclick = () => apriCalorifero(c, nx, true);
+    if ($('#aInt')) $('#aInt').onclick = () => { pila.pop(); const t = pila[pila.length - 1]; if (!(t && t[0] === vistaInterno)) pila.push([vistaInterno, [c, r.interno]]); tornaA(vistaInterno); };
+    if ($('#aCond')) $('#aCond').onclick = () => tornaA(vistaCondominio);
+  }
   const kP1 = 'vecchio:' + c + ':' + id;
   const p1 = () => mem.get(kP1, null);
   function passo1Comandi() {
