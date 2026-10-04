@@ -86,6 +86,8 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
 .scan video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .scan .guida{position:absolute;left:7%;right:7%;top:30%;height:30%;border:3px solid #fff;border-radius:14px;box-shadow:0 0 0 2000px rgba(0,0,0,.45)}
 .scan .guida.ok{border-color:#4ade80}
+.scan .guida.disp{top:33%;height:19%;left:5%;right:5%}
+.fotodisp{width:100%;border-radius:12px;border:3px solid var(--line);display:block}
 .scan .msg{position:absolute;left:16px;right:16px;top:calc(env(safe-area-inset-top,0px) + 16px);color:#fff;font-weight:700;font-size:18px;text-align:center;text-shadow:0 1px 3px #000}
 .scan .sotto{position:absolute;left:16px;right:16px;bottom:calc(env(safe-area-inset-bottom,0px) + 18px);display:flex;flex-direction:column;gap:10px}
 .scan .stato{color:#fff;text-align:center;font-size:15px;text-shadow:0 1px 3px #000}
@@ -110,7 +112,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.5.0';
+const VERSIONE = '0.6.1';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -169,6 +171,28 @@ function statoCal(c, id) {
   return null;
 }
 
+/* ---------- foto del display (IndexedDB: le foto non stanno nel localStorage) ---------- */
+const fotoDB = (() => {
+  let p = null;
+  const db = () => p || (p = new Promise((ok, ko) => { const r = indexedDB.open('bmcampo', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('foto'); r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error); }));
+  const tx = async (modo, fn) => { const d = await db(); return new Promise((ok, ko) => {
+    const t = d.transaction('foto', modo); const q = fn(t.objectStore('foto')); t.oncomplete = () => ok(q && q.result); t.onerror = () => ko(t.error); }); };
+  return {put: (k, v) => tx('readwrite', st => st.put(v, k)), get: k => tx('readonly', st => st.get(k)),
+          del: k => tx('readwrite', st => st.delete(k)), keys: () => tx('readonly', st => st.getAllKeys())};
+})();
+const blob64 = b => new Promise((ok, ko) => { const f = new FileReader(); f.onload = () => ok(String(f.result).split(',')[1]); f.onerror = () => ko(f.error); f.readAsDataURL(b); });
+async function inviaFoto(c) {      // foto delle sostituzioni REGISTRATE (pronta) -> lavori/<cond>/foto/<nome>
+  let chiavi = []; try { chiavi = await fotoDB.keys(); } catch (e) { return; }
+  for (const k of chiavi) {
+    const v = await fotoDB.get(k);
+    if (!v || v.cond !== c || !v.pronta) continue;
+    await gh('PUT', 'contents/' + percorsoCond(c) + '/foto/' + encodeURIComponent(v.nome),
+      {message: 'foto display ' + cfg.dispositivo + ' - ' + c, content: await blob64(v.blob)});
+    await fotoDB.del(k);
+  }
+}
+
 /* ---------- sincronizzazione ---------- */
 let inCorso = {};
 async function sincronizza(c) {
@@ -196,6 +220,7 @@ async function sincronizza(c) {
       if (JSON.stringify(m2[c].rec) === JSON.stringify(corpo.rec)) m2[c].sporco = false;   // modifiche nel frattempo: resta da inviare
       mem.set('mio', m2);
     }
+    try { await inviaFoto(c); } catch (e) { console.warn('foto', e); }
     mem.set('ultimaSync:' + c, Date.now());
   } finally { inCorso[c] = false; aggiornaRete(); }
 }
@@ -340,6 +365,139 @@ async function apriScanner(atteso, note) {
         }
       } catch (e) { stato.textContent = 'Errore lettore: ' + e.message; }
       setTimeout(giro, 150);
+    };
+    giro();
+  });
+}
+
+/* ---------- foto del DISPLAY del vecchio: il tecnico tiene il display nel riquadro, l'app sceglie da sola ----------
+   Il display WHE5 gira da solo (~13 s): CONSUMO -> test 888888 (breve) -> vuoto (breve) -> data -> ... -> CONSUMO.
+   Per ogni fotogramma (~8 al s): trovo il vetro del display (zona chiara chiusa da una cornice scura) e misuro quanta
+   "inchiostro" di segmenti c'e'. La firma TEST (molti segmenti, breve) + VUOTO (niente, breve) e' inconfondibile:
+   il consumo e' la schermata ferma subito PRIMA del test -> tengo il fotogramma piu' nitido di quel tratto.
+   Ripiego: pulsante "Scatta tu" sempre disponibile. Collaudo: video reali 04/10/2026 (prototipo /home/claude/display/sim2.py). */
+function vetroDisplay(gr, w, h) {            // gr: luminosita' (Uint8Array w*h) -> [x,y,w,h] del vetro o null
+  const ord = Float32Array.from(gr).sort(), med = ord[ord.length >> 1];
+  for (const f of [0.45, 0.70]) {
+    const scuro = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) scuro[i] = gr[i] < f * med ? 1 : 0;
+    const lab = new Int32Array(w * h).fill(-1); let migliore = null; const coda = new Int32Array(w * h);
+    for (let i0 = 0; i0 < w * h; i0++) {
+      if (scuro[i0] || lab[i0] >= 0) continue;
+      let qa = 0, qb = 0, x0 = w, y0 = h, x1 = 0, y1 = 0, n = 0, bordo = false; coda[qb++] = i0; lab[i0] = i0;
+      while (qa < qb) {
+        const i = coda[qa++], x = i % w, y = (i / w) | 0; n++;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        if (x === 0 || y === 0 || x === w - 1 || y === h - 1) bordo = true;
+        if (x > 0 && !scuro[i - 1] && lab[i - 1] < 0) { lab[i - 1] = i0; coda[qb++] = i - 1; }
+        if (x < w - 1 && !scuro[i + 1] && lab[i + 1] < 0) { lab[i + 1] = i0; coda[qb++] = i + 1; }
+        if (y > 0 && !scuro[i - w] && lab[i - w] < 0) { lab[i - w] = i0; coda[qb++] = i - w; }
+        if (y < h - 1 && !scuro[i + w] && lab[i + w] < 0) { lab[i + w] = i0; coda[qb++] = i + w; }
+      }
+      const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+      if (bordo || bw < w * 0.25 || bw / bh < 2 || bw / bh > 6.5 || n < 0.5 * bw * bh) continue;
+      if (!migliore || n > migliore[4]) migliore = [x0, y0, bw, bh, n];
+    }
+    if (migliore) return migliore.slice(0, 4);
+  }
+  return null;
+}
+function inchiostro(gr, w, h, r) {           // frazione di pixel "segmento" (scuri e sottili) nella fascia centrale del vetro
+  const W = 240, H = 90, c = new Float32Array(W * H);
+  const [rx, ry, rw, rh] = r || [w * 0.1, h * 0.2, w * 0.8, h * 0.6];
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++)
+    c[y * W + x] = gr[Math.min(h - 1, (ry + y * rh / H) | 0) * w + Math.min(w - 1, (rx + x * rw / W) | 0)];
+  const fil = (src, f) => { const o = new Float32Array(W * H), t = new Float32Array(W * H);        // max/min 9x9 separabile
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let v = src[y * W + x];
+      for (let k = Math.max(0, x - 4); k <= Math.min(W - 1, x + 4); k++) v = f(v, src[y * W + k]); t[y * W + x] = v; }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let v = t[y * W + x];
+      for (let k = Math.max(0, y - 4); k <= Math.min(H - 1, y + 4); k++) v = f(v, t[k * W + x]); o[y * W + x] = v; }
+    return o; };
+  const chiusura = fil(fil(c, Math.max), Math.min);
+  const ord = Float32Array.from(c).sort(), liv = ord[(ord.length * 0.9) | 0];
+  let n = 0, tot = 0;
+  for (let y = 22; y < 72; y++) for (let x = 14; x < 226; x++) { tot++; if (chiusura[y * W + x] - c[y * W + x] > 0.12 * liv) n++; }
+  let nit = 0; for (let i = 1; i < W * H; i++) nit += Math.abs(c[i] - c[i - 1]);
+  return [n / tot, nit / (W * H)];
+}
+async function apriDisplay() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('questo browser non da\' accesso alla fotocamera');
+  const stream = await navigator.mediaDevices.getUserMedia({audio: false,
+    video: {facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080}}});
+  const ov = document.createElement('div'); ov.className = 'scan';
+  ov.innerHTML = `<video playsinline muted autoplay></video><div class="guida disp"></div>
+    <div class="msg">Metti il DISPLAY nel riquadro e tieni fermo: il consumo lo prendo io (al massimo 20 secondi)</div>
+    <div class="sotto"><div class="stato">Tieni fermo…</div>
+      <div class="riga"><button class="btn sec" id="scattaD">📸 Scatta tu</button><button class="btn sec" id="torcia" hidden>Torcia</button><button class="btn sec" id="annD">Annulla</button></div></div>`;
+  document.body.appendChild(ov);
+  const video = ov.querySelector('video'), guida = ov.querySelector('.guida'), stato = ov.querySelector('.stato');
+  video.srcObject = stream; try { await video.play(); } catch (e) {}
+  const traccia = stream.getVideoTracks()[0];
+  try {
+    const cap = traccia.getCapabilities ? traccia.getCapabilities() : {};
+    if (cap.torch) { const t = ov.querySelector('#torcia'); t.hidden = false; let acc = false;
+      t.onclick = () => { acc = !acc; traccia.applyConstraints({advanced: [{torch: acc}]}).catch(() => {}); }; }
+  } catch (e) {}
+  const riquadro = () => {
+    const vw = video.videoWidth, vh = video.videoHeight, W = ov.clientWidth, H = ov.clientHeight;
+    const k = Math.max(W / vw, H / vh), ox = (W - vw * k) / 2, oy = (H - vh * k) / 2, b = guida.getBoundingClientRect();
+    let x = (b.left - ox) / k, y = (b.top - oy) / k, w = b.width / k, h = b.height / k;
+    const mx = w * 0.12, my = h * 0.35;
+    x = Math.max(0, x - mx); y = Math.max(0, y - my); w = Math.min(vw - x, w + 2 * mx); h = Math.min(vh - y, h + 2 * my);
+    return [x, y, w, h];
+  };
+  const SW = 320;                                   // larghezza di analisi
+  const piccola = document.createElement('canvas'), gp = piccola.getContext('2d', {willReadFrequently: true});
+  return new Promise(risolvi => {
+    let finito = false; const t0 = Date.now(); let storia = [];
+    const chiudi = v => { if (finito) return; finito = true; stream.getTracks().forEach(t => t.stop()); ov.remove(); risolvi(v); };
+    const consegna = (cv, come) => { guida.classList.add('ok'); if (navigator.vibrate) navigator.vibrate(60);
+      cv.toBlob(b => chiudi(b ? {blob: b, url: URL.createObjectURL(b), come} : null), 'image/jpeg', 0.8); };
+    ov.querySelector('#annD').onclick = () => chiudi(null);
+    ov.querySelector('#scattaD').onclick = () => {           // ripiego manuale: il piu' nitido degli ultimi 0,5 s
+      const ult = storia.filter(e => Date.now() - e.t < 600);
+      if (ult.length) consegna(ult.reduce((a, e) => e.nit > a.nit ? e : a).cv, 'scattata dal tecnico');
+    };
+    const giro = () => {
+      if (finito) return;
+      try {
+        if (video.readyState >= 2 && video.videoWidth) {
+          const [x, y, w, h] = riquadro(); const t = Date.now();
+          const cv = document.createElement('canvas'); const sc = Math.min(1, 640 / w);
+          cv.width = Math.round(w * sc); cv.height = Math.round(h * sc);
+          cv.getContext('2d').drawImage(video, x, y, w, h, 0, 0, cv.width, cv.height);
+          piccola.width = SW; piccola.height = Math.max(20, Math.round(SW * h / w));
+          gp.drawImage(cv, 0, 0, piccola.width, piccola.height);
+          const d = gp.getImageData(0, 0, piccola.width, piccola.height).data, gr = new Uint8Array(piccola.width * piccola.height);
+          for (let i = 0, j = 0; i < gr.length; i++, j += 4) gr[i] = (d[j] * 3 + d[j + 1] * 6 + d[j + 2]) / 10;
+          const v = vetroDisplay(gr, piccola.width, piccola.height);
+          const [ink, nit] = inchiostro(gr, piccola.width, piccola.height, v);
+          guida.style.borderColor = v ? '#facc15' : '#fff';
+          storia.push({t, s: ink, nit, cv}); storia = storia.filter(e => t - e.t < 8000);
+          for (const e of storia) if (t - e.t > 3500) e.cv = null;            // tengo le immagini solo degli ultimi 3,5 s
+          const S = storia, med = [...S.map(e => e.s)].sort((a, b) => a - b)[S.length >> 1];
+          // firma: TEST breve + VUOTO breve, poi di nuovo una schermata
+          if (S.length > 12 && ink > 0.6 * med) {
+            let j = S.length - 2; const fine = j; let salti = 0;
+            while (j >= 0 && S[j].s >= 0.45 * med && S[j].s < 0.6 * med && salti < 2) { j--; salti++; }   // passaggio
+            const fv = j; while (j >= 0 && S[j].s < 0.45 * med) j--;
+            const durV = fv > j ? S[fv].t - S[j + 1].t + 120 : 0;
+            if (durV >= 150 && durV <= 1300 && j >= 0) {
+              let k = j, picco = S[k].s;
+              while (k >= 0 && S[k].s >= 0.85 * Math.max(picco, S[k].s)) { picco = Math.max(picco, S[k].s); k--; }
+              const durT = S[j].t - S[k + 1].t + 120, on = S[k + 1].t;
+              if (picco > 1.15 * med && durT <= 1500) {
+                const cand = S.filter(e => e.cv && e.t >= on - 1600 && e.t <= on - 250);
+                if (cand.length) return consegna(cand.reduce((a, e) => e.nit > a.nit ? e : a).cv, 'presa in automatico');
+              }
+            }
+          }
+          const sec = Math.round((t - t0) / 1000);
+          stato.textContent = (v ? 'Display trovato, tieni fermo… ' : 'Metti il display nel riquadro… ') + sec + ' s' +
+            (sec >= 20 ? ' — non riesco: premi "Scatta tu" quando vedi il consumo' : '');
+        }
+      } catch (e) { stato.textContent = 'Errore: ' + e.message; }
+      setTimeout(giro, 110);
     };
     giro();
   });
@@ -518,14 +676,15 @@ function vistaCalorifero(c, id) {
       ${s ? `<div class="esito ${s.r.stato === 'problema' || s.doppio ? 'ko' : 'ok'}"><span class="tit">${s.r.stato === 'problema' ? 'Segnato con PROBLEMA' : 'Già sostituito'}${s.mio ? '' : ' da ' + esc(s.r.da)}</span>
         letto ${esc(s.r.letto || '-')} · ${s.r.metodo === 'manuale' ? 'inserito a mano' : s.r.metodo && s.r.metodo.startsWith('numero') ? 'dal numero stampato' + (s.r.metodo.includes('conf') ? ' (confermato)' : '') : 'letto dalla fotocamera'} · ${new Date(s.r.ora).toLocaleString('it-IT')}
         ${s.r.vecchio_ok === false ? '<br>⚠ vecchio non verificato: ' + esc(s.r.vecchio_nota || '') : s.r.vecchio_ok ? '<br>vecchio verificato ' + esc(s.r.vecchio_letto || '') : ''}
+        ${s.r.consumo_vecchio ? '<br>consumo vecchio ' + esc(s.r.consumo_vecchio) : ''}${s.r.foto_display ? '<br>foto del display salvata' : ''}${s.r.display_nota ? '<br>⚠ consumo non letto: ' + esc(s.r.display_nota) : ''}
         ${s.r.nota ? '<br>' + esc(s.r.nota) : ''}${s.doppio ? '<br><b>Attenzione: risulta fatto anche da ' + esc(s.altri.map(a => a.da).join(', ')) + '</b>' : ''}</div>` : ''}
       <div id="esito">${esitoHtml || ''}</div>
       ${s ? dopoHtml() : ''}
       ${!s && !p1() ? `<div class="esito warn"><span class="tit">1° passo: il VECCHIO</span>Prima di toglierlo, inquadra il ripartitore VECCHIO ancora montato su questo calorifero (deve essere ${esc(r.vecchia)}).</div>
       <button class="btn pri" id="inqV">📷 Inquadra il ripartitore VECCHIO</button>
       <button class="btn sec pic" id="manoV">⌨ Scrivi la matricola del vecchio</button>
-      <button class="btn sec pic" id="saltaV">Il vecchio manca o è illeggibile</button>` : `
-      ${!s ? `<div class="esito ${p1().saltato ? 'warn' : 'ok'}"><span class="tit">1° passo ${p1().saltato ? '⚠ vecchio NON verificato' : '✓ vecchio verificato'}</span>${p1().saltato ? esc(p1().motivo) + ' — l\u2019ufficio dovrà controllare' : esc(p1().letto) + ' è il ripartitore di questo calorifero: ora toglilo e monta il nuovo'}</div>` : ''}
+      <button class="btn sec pic" id="saltaV">Il vecchio manca o è illeggibile</button>` : !s && p1() && !p1().display ? htmlDisplay() : `
+      ${!s ? testoP1() + `<div class="esito ${p1().display.saltato ? 'warn' : 'ok'}"><span class="tit">Consumo del vecchio ${p1().display.saltato ? '⚠ non letto' : '✓'}</span>${p1().display.saltato ? esc(p1().display.motivo) : (p1().display.consumo ? 'consumo ' + esc(p1().display.consumo) : 'foto del display salvata') } — ora togli il vecchio e monta il nuovo</div>` : ''}
       <button class="btn ${s ? 'sec' : 'pri'}" id="inquadra">📷 ${s ? 'Rileggi il ripartitore nuovo montato' : '2° passo: inquadra il NUOVO montato'}</button>
       <label class="btn sec pic foto" for="scatto">Scatta una foto (se l'inquadratura non legge)
         <input id="scatto" type="file" accept="image/*" capture="environment"></label>
@@ -534,6 +693,7 @@ function vistaCalorifero(c, id) {
       ${!s && p1() ? '<button class="btn sec pic" id="rifaiV">Rifai il 1° passo (vecchio)</button>' : ''}`;
     if (s) collegaDopo();
     if ($('#inqV')) { passo1Comandi(); return; }
+    if ($('#fotoD')) { displayComandi(); if ($('#rifaiV')) $('#rifaiV').onclick = () => { mem.set(kP1, null); disegna(); }; return; }
     if ($('#rifaiV')) $('#rifaiV').onclick = () => { mem.set(kP1, null); disegna(); };
     $('#scatto').onchange = async e => {
       const f = e.target.files && e.target.files[0]; if (!f) return;
@@ -597,7 +757,52 @@ function vistaCalorifero(c, id) {
     if ($('#aInt')) $('#aInt').onclick = () => { pila.pop(); const t = pila[pila.length - 1]; if (!(t && t[0] === vistaInterno)) pila.push([vistaInterno, [c, r.interno]]); tornaA(vistaInterno); };
     if ($('#aCond')) $('#aCond').onclick = () => tornaA(vistaCondominio);
   }
-  const kP1 = 'vecchio:' + c + ':' + id;
+  const kP1 = 'vecchio:' + c + ':' + id, kFoto = c + '|' + id;
+  function testoP1() {
+    const v = p1();
+    return `<div class="esito ${v.saltato ? 'warn' : 'ok'}"><span class="tit">1° passo ${v.saltato ? '⚠ vecchio NON verificato' : '✓ vecchio verificato'}</span>${v.saltato ? esc(v.motivo) + ' — l\u2019ufficio dovrà controllare' : esc(v.letto) + ' è il ripartitore di questo calorifero'}</div>`;
+  }
+  function htmlDisplay() {
+    return testoP1() + `<div class="esito warn"><span class="tit">Consumo del VECCHIO</span><span>Prima di smontarlo inquadra il display e <b>tieni fermo</b>: il display cambia scritta da solo e l’app prende da sola la schermata del <b>CONSUMO</b> (il numero senza lettere né simboli, es. 00000). Al massimo 20 secondi.</span></div>
+      <button class="btn pri" id="fotoD">📷 Inquadra il display</button>
+      <button class="btn sec pic" id="manoD">⌨ Scrivi il consumo a mano</button>
+      <button class="btn sec pic" id="saltaD">Display spento o illeggibile</button>`;
+  }
+  function salvaDisplay(d) { mem.set(kP1, Object.assign({}, p1(), {display: Object.assign({ora: new Date().toISOString()}, d)})); disegna(); }
+  function chiediConsumo(conFoto) {
+    $('#esito').innerHTML = `<div class="sez"><label class="campo" for="cons">Consumo che leggi sul display (solo le cifre)
+      <input class="txt" id="cons" inputmode="numeric" maxlength="7" autocomplete="off"></label>
+      <button class="btn pri pic" id="okCons">Conferma il consumo</button></div>`;
+    $('#cons').focus();
+    una($('#okCons'), () => { const v = $('#cons').value.replace(/\D/g, ''); if (!v) { $('#cons').focus(); return; }
+      salvaDisplay({consumo: v, foto: !!conFoto, metodo: conFoto ? 'foto + scritto' : 'scritto a mano'}); });
+  }
+  function displayComandi() {
+    una($('#fotoD'), async () => {
+      let f = null;
+      try { f = await apriDisplay(); } catch (err) {
+        $('#esito').innerHTML = '<div class="esito ko"><span class="tit">Fotocamera non disponibile</span>' + esc(err.message || err) + '<br>Scrivi il consumo a mano.</div>'; return; }
+      if (!f) return;
+      $('#esito').innerHTML = `<div class="sez"><img class="fotodisp" src="${f.url}" alt="foto del display">
+        <p>Foto ${esc(f.come || "")}: si vede bene il numero del <b>consumo</b>, senza lettere né simboli accanto?</p>
+        <button class="btn pri" id="okF">✓ Foto giusta</button>
+        <div class="riga"><button class="btn sec pic" id="rifF">↻ Rifai la foto</button><button class="btn sec pic" id="scriviF">⌨ Scrivi il consumo</button></div></div>`;
+      const tieni = async () => { await fotoDB.put(kFoto, {cond: c, id, blob: f.blob, pronta: false,
+        nome: id + '-' + slug(cfg.dispositivo) + '-' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14) + '.jpg'}); };
+      una($('#okF'), async () => { try { await tieni(); } catch (e) { avviso('Foto non salvata nel telefono: ' + e.message); }
+        salvaDisplay({consumo: '', foto: true, metodo: 'foto approvata'}); });
+      $('#rifF').onclick = () => $('#fotoD').click();
+      $('#scriviF').onclick = async () => { try { await tieni(); } catch (e) {} chiediConsumo(true); };
+    });
+    $('#manoD').onclick = () => chiediConsumo(false);
+    $('#saltaD').onclick = () => {
+      $('#esito').innerHTML = `<div class="esito warn"><span class="tit">Perché non si legge il consumo?</span>
+        <div class="sez"><button class="btn sec pic" data-d="display SPENTO">Display spento</button>
+        <button class="btn sec pic" data-d="display ILLEGGIBILE o rotto">Illeggibile o rotto</button>
+        <button class="btn sec pic" data-d="ripartitore vecchio MANCANTE">Il vecchio non c'è</button></div></div>`;
+      document.querySelectorAll('#esito [data-d]').forEach(b => b.onclick = () => salvaDisplay({saltato: true, motivo: b.dataset.d}));
+    };
+  }
   const p1 = () => mem.get(kP1, null);
   function passo1Comandi() {
     una($('#inqV'), async () => {
@@ -638,7 +843,15 @@ function vistaCalorifero(c, id) {
   function datiVecchio() {
     const v = p1();
     if (!v) return {vecchio_ok: false, vecchio_nota: 'passo del vecchio non fatto'};
-    return v.saltato ? {vecchio_ok: false, vecchio_nota: v.motivo} : {vecchio_ok: true, vecchio_letto: v.letto, vecchio_metodo: v.metodo};
+    const d = v.display || {}, disp = d.saltato ? {display_nota: d.motivo} : {consumo_vecchio: d.consumo || '', display_metodo: d.metodo || ''};
+    return Object.assign(v.saltato ? {vecchio_ok: false, vecchio_nota: v.motivo} : {vecchio_ok: true, vecchio_letto: v.letto, vecchio_metodo: v.metodo}, disp);
+  }
+  async function fotoPronta(rec) {     // la foto del display parte solo per una sostituzione registrata
+    try { const v = await fotoDB.get(kFoto); if (!v) return;
+      v.pronta = true; await fotoDB.put(kFoto, v);
+      const m = mem.get('mio', {}); if (m[c] && m[c].rec[id]) { m[c].rec[id].foto_display = 'foto/' + v.nome; m[c].sporco = true; mem.set('mio', m); }
+      sincronizza(c).catch(() => {}); setTimeout(() => sincronizza(c).catch(() => {}), 5000);
+    } catch (e) { console.warn('foto', e); }
   }
   function valuta(matr, metodo, codici) {
     const out = $('#esito');
@@ -652,7 +865,7 @@ function vistaCalorifero(c, id) {
     const m = matr.includes(r.nuova) ? r.nuova : matr[0];
     if (m === r.nuova) {
       salvaRec(c, id, Object.assign({stato: 'posato', letto: m, metodo, ora: new Date().toISOString(), nota: ''}, datiVecchio()));
-      mem.set(kP1, null);
+      fotoPronta(); mem.set(kP1, null);
       if (navigator.vibrate) navigator.vibrate(80);
       disegna(`<div class="esito ok"><span class="tit">Giusto ✓ registrato</span><b class="big">${esc(m)}</b><span>è il ripartitore previsto per questo calorifero.</span></div>`);
       return;
@@ -669,7 +882,7 @@ function vistaCalorifero(c, id) {
       <div class="riga"><button class="btn sec pic" id="forza">Montato comunque: segna PROBLEMA</button></div></div>`;
     una($('#forza'), () => {
       salvaRec(c, id, Object.assign({stato: 'problema', letto: m, metodo, ora: new Date().toISOString(), nota: 'montato ' + m + ' invece di ' + r.nuova}, datiVecchio()));
-      mem.set(kP1, null);
+      fotoPronta(); mem.set(kP1, null);
       disegna('<div class="esito warn"><span class="tit">Segnato con PROBLEMA</span>L’ufficio vedrà la differenza.</div>');
     });
   }
