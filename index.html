@@ -112,7 +112,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.6.1';
+const VERSIONE = '0.6.2';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -129,11 +129,12 @@ const percorsoCond = c => 'lavori/' + encodeURIComponent(c);
 
 /* ---------- GitHub ---------- */
 async function gh(metodo, percorso, corpo, raw) {
+  const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 45000);    // niente attese infinite
   const r = await fetch('https://api.github.com/repos/' + OWNER + '/' + REPO + '/' + percorso, {
-    method: metodo, cache: 'no-store',
+    method: metodo, cache: 'no-store', signal: ctl.signal,
     headers: {'Authorization': 'Bearer ' + cfg.token, 'Accept': raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json',
               'X-GitHub-Api-Version': '2022-11-28'},
-    body: corpo ? JSON.stringify(corpo) : undefined });
+    body: corpo ? JSON.stringify(corpo) : undefined }).finally(() => clearTimeout(tm));
   if (r.status === 404) return {stato: 404, dati: null};
   if (!r.ok) { let m = ''; try { m = (await r.json()).message; } catch (e) {} throw new Error('GitHub ' + r.status + (m ? ': ' + m : '')); }
   return {stato: r.status, dati: raw ? await r.text() : await r.json()};
@@ -181,23 +182,28 @@ const fotoDB = (() => {
   return {put: (k, v) => tx('readwrite', st => st.put(v, k)), get: k => tx('readonly', st => st.get(k)),
           del: k => tx('readwrite', st => st.delete(k)), keys: () => tx('readonly', st => st.getAllKeys())};
 })();
-const blob64 = b => new Promise((ok, ko) => { const f = new FileReader(); f.onload = () => ok(String(f.result).split(',')[1]); f.onerror = () => ko(f.error); f.readAsDataURL(b); });
+async function blob64(b) {
+  const u = new Uint8Array(await b.arrayBuffer()); let s = '';
+  for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+const entro = (p, ms) => Promise.race([p, new Promise((_, ko) => setTimeout(() => ko(new Error('tempo scaduto')), ms))]);
 async function inviaFoto(c) {      // foto delle sostituzioni REGISTRATE (pronta) -> lavori/<cond>/foto/<nome>
-  let chiavi = []; try { chiavi = await fotoDB.keys(); } catch (e) { return; }
+  let chiavi = []; try { chiavi = await entro(fotoDB.keys(), 10000); } catch (e) { return; }
   for (const k of chiavi) {
-    const v = await fotoDB.get(k);
+    const v = await entro(fotoDB.get(k), 10000);
     if (!v || v.cond !== c || !v.pronta) continue;
-    await gh('PUT', 'contents/' + percorsoCond(c) + '/foto/' + encodeURIComponent(v.nome),
-      {message: 'foto display ' + cfg.dispositivo + ' - ' + c, content: await blob64(v.blob)});
-    await fotoDB.del(k);
+    await entro(gh('PUT', 'contents/' + percorsoCond(c) + '/foto/' + encodeURIComponent(v.nome),
+      {message: 'foto display ' + cfg.dispositivo + ' - ' + c, content: await blob64(v.blob)}), 60000);
+    await entro(fotoDB.del(k), 10000);
   }
 }
 
 /* ---------- sincronizzazione ---------- */
 let inCorso = {};
 async function sincronizza(c) {
-  if (!navigator.onLine || !cfg || inCorso[c]) return;
-  inCorso[c] = true;
+  if (!navigator.onLine || !cfg || (inCorso[c] && Date.now() - inCorso[c] < 90000)) return;
+  inCorso[c] = Date.now();
   try {
     const p = await gh('GET', 'contents/' + percorsoCond(c) + '/piano.json', null, true);
     if (p.dati) mem.set('piano:' + c, JSON.parse(p.dati));
@@ -220,9 +226,9 @@ async function sincronizza(c) {
       if (JSON.stringify(m2[c].rec) === JSON.stringify(corpo.rec)) m2[c].sporco = false;   // modifiche nel frattempo: resta da inviare
       mem.set('mio', m2);
     }
-    try { await inviaFoto(c); } catch (e) { console.warn('foto', e); }
     mem.set('ultimaSync:' + c, Date.now());
-  } finally { inCorso[c] = false; aggiornaRete(); }
+    inviaFoto(c).catch(e => console.warn('foto', e));
+  } finally { inCorso[c] = 0; aggiornaRete(); }
 }
 async function sincronizzaTutto() {
   if (!navigator.onLine || !cfg) return;
@@ -689,9 +695,11 @@ function vistaCalorifero(c, id) {
       <label class="btn sec pic foto" for="scatto">Scatta una foto (se l'inquadratura non legge)
         <input id="scatto" type="file" accept="image/*" capture="environment"></label>
       <button class="btn sec" id="mano" style="flex-direction:column;gap:2px;padding-block:8px">⌨ Scrivi la matricola a mano<small style="font-weight:400;font-size:14px">fotocamera guasta o etichetta illeggibile</small></button>
+      ${s && s.mio && !s.r.consumo_vecchio && !s.r.foto_display ? '<button class="btn pri" id="consDopo">📷 Leggi il consumo del vecchio (display)</button>' : ''}
       ${s && s.mio ? '<button class="btn sec pic" id="annulla">Annulla questa sostituzione</button>' : ''}`}
       ${!s && p1() ? '<button class="btn sec pic" id="rifaiV">Rifai il 1° passo (vecchio)</button>' : ''}`;
     if (s) collegaDopo();
+    if ($('#consDopo')) una($('#consDopo'), consumoDopo);
     if ($('#inqV')) { passo1Comandi(); return; }
     if ($('#fotoD')) { displayComandi(); if ($('#rifaiV')) $('#rifaiV').onclick = () => { mem.set(kP1, null); disegna(); }; return; }
     if ($('#rifaiV')) $('#rifaiV').onclick = () => { mem.set(kP1, null); disegna(); };
@@ -776,6 +784,34 @@ function vistaCalorifero(c, id) {
     $('#cons').focus();
     una($('#okCons'), () => { const v = $('#cons').value.replace(/\D/g, ''); if (!v) { $('#cons').focus(); return; }
       salvaDisplay({consumo: v, foto: !!conFoto, metodo: conFoto ? 'foto + scritto' : 'scritto a mano'}); });
+  }
+  // consumo del vecchio aggiunto DOPO (sostituzione gia' registrata senza consumo)
+  function aggiornaRec(campi) {
+    const m = mem.get('mio', {}); if (!m[c] || !m[c].rec[id]) return;
+    Object.assign(m[c].rec[id], campi); m[c].sporco = true; mem.set('mio', m); aggiornaRete();
+    sincronizza(c).catch(() => {}); setTimeout(() => sincronizza(c).catch(() => {}), 5000);
+  }
+  async function consumoDopo() {
+    let f = null;
+    try { f = await apriDisplay(); } catch (err) {
+      $('#esito').innerHTML = '<div class="esito ko"><span class="tit">Fotocamera non disponibile</span>' + esc(err.message || err) + '</div>'; return; }
+    if (!f) return;
+    $('#esito').innerHTML = `<div class="sez"><img class="fotodisp" src="${f.url}" alt="foto del display">
+      <p>Foto ${esc(f.come || '')}: si vede bene il numero del <b>consumo</b>, senza lettere né simboli accanto?</p>
+      <button class="btn pri" id="okF2">✓ Foto giusta</button>
+      <div class="riga"><button class="btn sec pic" id="rifF2">↻ Rifai la foto</button><button class="btn sec pic" id="scriviF2">⌨ Scrivi il consumo</button></div></div>`;
+    const nome = id + '-' + slug(cfg.dispositivo) + '-' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14) + '.jpg';
+    const tieni = async () => { try { await fotoDB.put(kFoto, {cond: c, id, blob: f.blob, pronta: true, nome}); } catch (e) { avviso('Foto non salvata: ' + e.message); } };
+    una($('#okF2'), async () => { await tieni(); aggiornaRec({foto_display: 'foto/' + nome, display_metodo: 'foto approvata (dopo la posa)'}); disegna(); });
+    $('#rifF2').onclick = () => consumoDopo();
+    $('#scriviF2').onclick = async () => {
+      await tieni();
+      $('#esito').innerHTML = `<div class="sez"><label class="campo" for="cons2">Consumo che leggi sul display (solo le cifre)
+        <input class="txt" id="cons2" inputmode="numeric" maxlength="7" autocomplete="off"></label><button class="btn pri pic" id="okC2">Conferma il consumo</button></div>`;
+      $('#cons2').focus();
+      una($('#okC2'), () => { const v = $('#cons2').value.replace(/\D/g, ''); if (!v) return;
+        aggiornaRec({consumo_vecchio: v, foto_display: 'foto/' + nome, display_metodo: 'foto + scritto (dopo la posa)'}); disegna(); });
+    };
   }
   function displayComandi() {
     una($('#fotoD'), async () => {
