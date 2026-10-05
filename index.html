@@ -115,7 +115,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.8.2';
+const VERSIONE = '0.9.0';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -695,10 +695,10 @@ async function apriDisplay() {
   const SW = 320;                                   // larghezza di analisi
   const piccola = document.createElement('canvas'), gp = piccola.getContext('2d', {willReadFrequently: true});
   return new Promise(risolvi => {
-    let finito = false; const t0 = Date.now(); let storia = [];
+    let finito = false; const t0 = Date.now(); let storia = [], tentativi = 0, diag = [], ultimoGiro = 0;
     const chiudi = v => { if (finito) return; finito = true; stream.getTracks().forEach(t => t.stop()); ov.remove(); risolvi(v); };
     const consegna = (cv, come, numero) => { guida.classList.add('ok'); if (navigator.vibrate) navigator.vibrate(60);
-      cv.toBlob(b => chiudi(b ? {blob: b, url: URL.createObjectURL(b), come, numero: numero || null} : null), 'image/jpeg', 0.8); };
+      cv.toBlob(b => chiudi(b ? {blob: b, url: URL.createObjectURL(b), come, numero: numero || null, diag: diag.slice(-6).join(' / ')} : null), 'image/jpeg', 0.8); };
     ov.querySelector('#annD').onclick = () => chiudi(null);
     ov.querySelector('#scattaD').onclick = () => {           // ripiego manuale: il piu' nitido degli ultimi 0,5 s
       const ult = storia.filter(e => Date.now() - e.t < 600);
@@ -745,8 +745,10 @@ async function apriDisplay() {
                 // consumo = schermata FERMA prima del test: salto l'ultimo mezzo secondo (passaggio verso 888888)
                 const cand = S.filter(e => e.cv && e.t >= on - 1900 && e.t <= on - 450);
                 const mc = cand.length ? ord(cand.map(e => e.s))[cand.length >> 1] : 0;
-                const fermi = cand.filter(e => Math.abs(e.s - mc) <= 0.12 * mc);
-                if (fermi.length && picco >= 1.04 * mc) {
+                // 0.9.0: fotogrammi fermi E nitidi (nb almeno il 75% della nitidezza mediana): un mosso non va bene
+                const fermi = cand.filter(e => Math.abs(e.s - mc) <= 0.12 * mc && e.nb >= 0.75 * mnb);
+                if (fermi.length && picco >= 1.04 * mc && t - ultimoGiro > 2500) {
+                  ultimoGiro = t;
                   let numero = null;
                   try {                                                   // cifre: stampo dal test, voti dai fotogrammi fermi
                     const test = S.filter(e => e.cv && e.t >= on && e.t <= S[j].t).reduce((a, e) => (!a || e.s > a.s) ? e : a, null);
@@ -758,15 +760,24 @@ async function apriDisplay() {
                       if (v.length && v[0][1] >= 2 && (v.length === 1 || v[1][1] < v[0][1])) numero = v[0][0];
                       window._voti = voti;
                     }
-                  } catch (er) { console.warn('cifre', er); }
-                  return consegna(fermi.reduce((a, e) => e.nit > a.nit ? e : a).cv, 'presa in automatico', numero);
+                  } catch (er) { console.warn('cifre', er); diag.push('errore ' + er.message); }
+                  // 0.9.0 (BEDO 05/10: foto MD / mosse passate come buone): si consegna SOLO se le cifre sono state lette
+                  if (numero) return consegna(fermi.reduce((a, e) => e.nit > a.nit ? e : a).cv, 'presa in automatico', numero);
+                  tentativi++;
+                  const perche = (window._perche || []).reduce((a, r) => { a[r] = (a[r] || 0) + 1; return a; }, {});
+                  diag.push('giro ' + tentativi + ': ' + fermi.length + ' fotogrammi, voti ' + JSON.stringify(window._voti || {}) + ', motivi ' + JSON.stringify(perche));
+                  stato.textContent = 'Ho visto il giro del display ma non ho letto bene le cifre: tieni più fermo, più vicino e senza riflessi…';
+                } else if (cand.length && picco >= 1.04 * mc && t - ultimoGiro > 2500) {
+                  ultimoGiro = t; tentativi++; diag.push('giro ' + tentativi + ': tutti i fotogrammi mossi');
+                  stato.textContent = 'Fotogrammi mossi: tieni il telefono più fermo (appoggialo se puoi)…';
                 }
               }
             }
           }
           const sec = Math.round((t - t0) / 1000);
-          stato.textContent = (v ? 'Display trovato, tieni fermo… ' : 'Metti il display nel riquadro… ') + sec + ' s' +
-            (sec >= 30 ? ' — non riesco: premi "Scatta tu" quando vedi il consumo' : '');
+          if (t - ultimoGiro > 2500 || sec >= 40)
+            stato.textContent = (v ? 'Display trovato, tieni fermo… ' : 'Metti il display nel riquadro… ') + sec + ' s' +
+              (sec >= 40 || tentativi >= 3 ? ' — non riesco a leggere le cifre: premi "Scatta tu" quando vedi il consumo e poi scrivilo' : '');
         }
       } catch (e) { stato.textContent = 'Errore: ' + e.message; }
       setTimeout(giro, 110);
@@ -1085,9 +1096,9 @@ function vistaCalorifero(c, id) {
       <button class="btn pri" id="okF${sfx}">✓ Giusto</button>
       <div class="riga"><button class="btn sec pic" id="rifF${sfx}">↻ Rifai</button><button class="btn sec pic" id="scriviF${sfx}">✏ Correggi</button></div></div>`;
     return `<div class="sez"><img class="fotodisp" src="${f.url}" alt="foto del display">
-      <p>Foto ${esc(f.come || '')}: il numero non l’ho letto con sicurezza. Si vede bene il <b>consumo</b>, senza lettere né simboli accanto? <b>Se accanto al numero c’è una M (consumo storico), MD, P o C non è il consumo: Rifai.</b></p>
-      <button class="btn pri" id="okF${sfx}">✓ Foto giusta (il numero lo legge l’ufficio)</button>
-      <div class="riga"><button class="btn sec pic" id="rifF${sfx}">↻ Rifai la foto</button><button class="btn sec pic" id="scriviF${sfx}">⌨ Scrivi il consumo</button></div></div>`;
+      <div class="esito warn"><span class="tit">Numero NON letto</span><span>Foto ${esc(f.come || '')}. Senza numero non si va avanti: se nella foto si vede il <b>consumo</b> (solo cifre, senza M, MD, P o C accanto) scrivilo tu qui sotto, la foto resta come prova; altrimenti rifai.</span></div>
+      <button class="btn pri" id="scriviF${sfx}">⌨ Scrivi il consumo che vedi</button>
+      <button class="btn sec" id="rifF${sfx}">↻ Rifai la lettura</button></div>`;
   }
   function salvaDisplay(d) { mem.set(kP1, Object.assign({}, p1(), {display: Object.assign({ora: new Date().toISOString()}, d)})); disegna(); }
   function chiediConsumo(conFoto, iniziale) {
@@ -1096,7 +1107,7 @@ function vistaCalorifero(c, id) {
       <button class="btn pri pic" id="okCons">Conferma il consumo</button></div>`;
     $('#cons').focus();
     una($('#okCons'), () => { const v = $('#cons').value.replace(/\D/g, ''); if (!v) { $('#cons').focus(); return; }
-      salvaDisplay({consumo: v, foto: !!conFoto, metodo: conFoto ? 'foto + scritto' : 'scritto a mano'}); });
+      salvaDisplay({consumo: v, foto: !!conFoto, metodo: conFoto ? 'foto + scritto' : 'scritto a mano', diag: (window._ultimaDiag || '')}); });
   }
   // consumo del vecchio aggiunto DOPO (sostituzione gia' registrata senza consumo)
   function aggiornaRec(campi) {
@@ -1113,8 +1124,7 @@ function vistaCalorifero(c, id) {
     const nome = id + '-' + slug(cfg.dispositivo) + '-' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14) + '.jpg';
     const tieni = async () => { try { await fotoDB.put(kFoto, {cond: c, id, blob: f.blob, pronta: true, nome}); } catch (e) { avviso('Foto non salvata: ' + e.message); } };
     una($('#okF2'), async () => { await tieni();
-      aggiornaRec(f.numero ? {consumo_vecchio: f.numero, foto_display: 'foto/' + nome, display_metodo: 'letto in automatico, confermato (dopo la posa)'}
-                           : {foto_display: 'foto/' + nome, display_metodo: 'foto approvata (dopo la posa)'}); disegna(); });
+      aggiornaRec({consumo_vecchio: f.numero, foto_display: 'foto/' + nome, display_metodo: 'letto in automatico, confermato (dopo la posa)', display_diag: f.diag || ''}); disegna(); });
     $('#rifF2').onclick = () => consumoDopo();
     $('#scriviF2').onclick = async () => {
       await tieni();
@@ -1135,9 +1145,9 @@ function vistaCalorifero(c, id) {
       const tieni = async () => { await fotoDB.put(kFoto, {cond: c, id, blob: f.blob, pronta: false,
         nome: id + '-' + slug(cfg.dispositivo) + '-' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14) + '.jpg'}); };
       una($('#okF'), async () => { try { await tieni(); } catch (e) { avviso('Foto non salvata nel telefono: ' + e.message); }
-        salvaDisplay(f.numero ? {consumo: f.numero, foto: true, metodo: 'letto in automatico, confermato'} : {consumo: '', foto: true, metodo: 'foto approvata'}); });
+        salvaDisplay({consumo: f.numero, foto: true, metodo: 'letto in automatico, confermato', diag: f.diag || ''}); });
       $('#rifF').onclick = () => $('#fotoD').click();
-      $('#scriviF').onclick = async () => { try { await tieni(); } catch (e) {} chiediConsumo(true, f.numero); };
+      $('#scriviF').onclick = async () => { try { await tieni(); } catch (e) {} window._ultimaDiag = f.diag || ''; chiediConsumo(true, f.numero); };
     });
     $('#manoD').onclick = () => chiediConsumo(false);
     $('#saltaD').onclick = () => {
@@ -1188,7 +1198,7 @@ function vistaCalorifero(c, id) {
   function datiVecchio() {
     const v = p1();
     if (!v) return {vecchio_ok: false, vecchio_nota: 'passo del vecchio non fatto'};
-    const d = v.display || {}, disp = d.saltato ? {display_nota: d.motivo} : {consumo_vecchio: d.consumo || '', display_metodo: d.metodo || ''};
+    const d = v.display || {}, disp = d.saltato ? {display_nota: d.motivo} : {consumo_vecchio: d.consumo || '', display_metodo: d.metodo || '', display_diag: d.diag || ''};
     return Object.assign(v.saltato ? {vecchio_ok: false, vecchio_nota: v.motivo} : {vecchio_ok: true, vecchio_letto: v.letto, vecchio_metodo: v.metodo}, disp);
   }
   async function fotoPronta(rec) {     // la foto del display parte solo per una sostituzione registrata
