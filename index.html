@@ -112,7 +112,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.6.4';
+const VERSIONE = '0.7.1';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -426,6 +426,158 @@ function inchiostro(gr, w, h, r) {           // frazione di pixel "segmento" (sc
   let nit = 0; for (let i = 1; i < W * H; i++) nit += Math.abs(c[i] - c[i - 1]);
   return [n / tot, nit / (W * H)];
 }
+/* ---------- lettura delle CIFRE del consumo (7 segmenti) ----------
+   La schermata di test 888888 (pochi decimi di secondo dopo il consumo) mostra TUTTI i segmenti: la uso come
+   stampo per sapere dove sta ogni segmento di ogni cifra, poi guardo quali segmenti sono accesi nel consumo.
+   Se anche un solo segmento e' incerto la lettura e' "dubbia" e non la uso. Valida solo se almeno 2 fotogrammi
+   danno lo stesso numero. Prototipo e prove: /home/claude/display/cifre2.py (04/10/2026). */
+const SEG7 = {'1111110': '0', '0110000': '1', '1101101': '2', '1111001': '3', '0110011': '4', '1011011': '5', '1011111': '6',
+  '1110000': '7', '1111111': '8', '1111011': '9', '1110010': '7', '0011111': '6', '1110011': '9'};
+function grigio(src, ix, iy, iw, ih, W) {
+  const H = Math.max(20, Math.round(W * ih / iw)), c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d', {willReadFrequently: true}); g.drawImage(src, ix, iy, iw, ih, 0, 0, W, H);
+  const d = g.getImageData(0, 0, W, H).data, o = new Float32Array(W * H);
+  for (let i = 0, j = 0; i < o.length; i++, j += 4) o[i] = (d[j] * 3 + d[j + 1] * 6 + d[j + 2]) / 10;
+  return {o, W, H};
+}
+function maschera7(gr) {                 // segmenti = scuri e sottili rispetto alla chiusura 13x13
+  const {o: c, W, H} = gr, r = 6;
+  const fil = (src, f) => { const t = new Float32Array(W * H), u = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let v = src[y * W + x];
+      for (let k = Math.max(0, x - r); k <= Math.min(W - 1, x + r); k++) v = f(v, src[y * W + k]); t[y * W + x] = v; }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let v = t[y * W + x];
+      for (let k = Math.max(0, y - r); k <= Math.min(H - 1, y + r); k++) v = f(v, t[k * W + x]); u[y * W + x] = v; }
+    return u; };
+  const cl = fil(fil(c, Math.max), Math.min), ord = Float32Array.from(c).sort(), liv = ord[(ord.length * 0.9) | 0];
+  const m = new Uint8Array(W * H); for (let i = 0; i < m.length; i++) m[i] = cl[i] - c[i] > 0.12 * liv ? 1 : 0;
+  // tolgo i pezzi che toccano il bordo, troppo grandi, minuscoli o sottili (tacche della cornice)
+  const lab = new Int32Array(W * H).fill(-1), q = new Int32Array(W * H), out = new Uint8Array(W * H);
+  for (let i0 = 0; i0 < m.length; i0++) {
+    if (!m[i0] || lab[i0] >= 0) continue;
+    let a = 0, b = 0, x0 = W, y0 = H, x1 = 0, y1 = 0; q[b++] = i0; lab[i0] = i0;
+    while (a < b) { const i = q[a++], x = i % W, y = (i / W) | 0;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue; const k = yy * W + xx;
+        if (m[k] && lab[k] < 0) { lab[k] = i0; q[b++] = k; } } }
+    const w = x1 - x0 + 1, h = y1 - y0 + 1;
+    if (x0 <= 1 || y0 <= 1 || x1 >= W - 2 || y1 >= H - 2 || w > 0.25 * W || h > 0.6 * H || b < 6 || w < 3) continue;
+    for (let k = 0; k < b; k++) out[q[k]] = 1;
+  }
+  return {m: out, W, H};
+}
+function tratti(p, soglia, buco) {        // tratti consecutivi sopra soglia (con buchi tollerati)
+  const r = []; let s = -1, z = 0;
+  for (let i = 0; i < p.length; i++) {
+    if (p[i] > soglia) { if (s < 0) s = i; z = 0; }
+    else if (s >= 0) { z++; if (z > buco) { r.push([s, i - z + 1]); s = -1; z = 0; } }
+  }
+  if (s >= 0) r.push([s, p.length]);
+  return r;
+}
+function componenti(m, W, H, tieni) {     // copia di m con solo i pezzi (8-connessi) per cui tieni(x0,y0,w,h,n) e' vero
+  const lab = new Uint8Array(W * H), q = new Int32Array(W * H), out = new Uint8Array(W * H);
+  for (let i0 = 0; i0 < m.length; i0++) {
+    if (!m[i0] || lab[i0]) continue;
+    let a = 0, b = 0, x0 = W, y0 = H, x1 = 0, y1 = 0; q[b++] = i0; lab[i0] = 1;
+    while (a < b) { const i = q[a++], x = i % W, y = (i / W) | 0;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue; const k = yy * W + xx;
+        if (m[k] && !lab[k]) { lab[k] = 1; q[b++] = k; } } }
+    if (tieni(x0, y0, x1 - x0 + 1, y1 - y0 + 1, b)) for (let k = 0; k < b; k++) out[q[k]] = 1;
+  }
+  return out;
+}
+/* Lettura delle cifre (v0.7.1, prototipo /home/claude/display/cifre4.py, 05/10/2026):
+   - il test 888888 serve solo per forma ("8" generico = maggioranza delle sue celle), larghezza e passo delle cifre;
+   - la banda delle cifre nel consumo = finestra alta come le cifre del test con piu' pezzi verticali;
+   - le 5 celle del consumo si trovano nel consumo stesso: ogni cifra (anche '1') arriva al bordo destro della sua
+     cella, quindi cerco 5 bordi destri a passo regolare, senza un'altra cifra subito a sinistra; se le soluzioni
+     non sono esattamente una -> niente lettura (meglio nessun numero che un numero sbagliato);
+   - per ogni cella allineamento fine +-4 px e 7 zone = parte centrale di ogni segmento. */
+function leggiCifre(T, C) {               // T, C: maschere {m,W,H} del test e del consumo -> '00153' | null
+  const {W, H} = C, no = r => { (window._perche = window._perche || []).push(r); return null; };
+  const righe = m => { const p = new Float32Array(H); for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) p[y] += m[y * W + x]; return p; };
+  const banda = m => { const p = righe(m), mx = Math.max(...p), r = tratti(p, Math.max(2, 0.15 * mx), 3);
+    return r.length ? r.reduce((a, t) => t[1] - t[0] > a[1] - a[0] ? t : a) : null; };
+  const col = (m, ya, yb, xa = 0, xb = W) => { const p = new Float32Array(xb - xa); for (let y = ya; y < yb; y++) for (let x = xa; x < xb; x++) p[x - xa] += m[y * W + x]; return p; };
+  const med = a => { const s = [...a].sort((p, q) => p - q), n = s.length; return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2; };
+  const b0 = banda(T.m);
+  if (!b0) return no('banda');
+  const bh0 = b0[1] - b0[0];
+  const fini = m => componenti(m, W, H, (x, y, w, h) => !(h < 0.3 * bh0 && w < 0.15 * bh0));
+  const alti = m => componenti(m, W, H, (x, y, w, h) => h >= 0.35 * bh0);     // pezzi verticali: ogni cifra ne ha
+  const bT = banda(alti(T.m));
+  if (!bT) return no('banda');
+  const mT = fini(T.m), mC = fini(C.m), [ty0, ty1] = bT, bh = ty1 - ty0;
+  if (bh < 0.15 * H || H - bh < 1) return no('altezze');
+  const rv = righe(alti(C.m)); let cy0 = 0, sm = 0, bs = -1;
+  for (let y = 0; y < H; y++) { sm += rv[y]; if (y >= bh) sm -= rv[y - bh]; if (y >= bh - 1 && sm > bs) { bs = sm; cy0 = y - bh + 1; } }
+  const cy1 = cy0 + bh;
+  let tr = tratti(col(mT, ty0, Math.trunc(ty0 + 0.8 * bh)), 0.08 * bh, 1).filter(r => r[1] - r[0] >= 0.3 * bh);
+  if (tr.length < 4) return no('celle test');
+  const mw = med(tr.map(r => r[1] - r[0])); tr = tr.filter(r => r[1] - r[0] >= 0.85 * mw);
+  if (tr.length < 4) return no('celle test');
+  const passo = med(tr.slice(1).map((t, i) => t[1] - tr[i][1])), cwm = Math.round(med(tr.map(t => t[1] - t[0])));
+  const gen = new Uint8Array(cwm * bh);                                   // "8" generico cwm x bh
+  for (let y = 0; y < bh; y++) for (let x = 0; x < cwm; x++) {
+    let n = 0;
+    for (const [a, b] of tr) n += mT[(ty0 + y) * W + a + Math.min(b - a - 1, Math.floor(x * (b - a) / cwm))];
+    gen[y * cwm + x] = n / tr.length >= 0.5 ? 1 : 0;
+  }
+  // bordi destri delle cifre nel consumo (solo pezzi alti almeno 60% della banda)
+  const cr = tratti(col(mC, cy0, cy1), 0.08 * bh, 1).filter(r => {
+    if (r[1] - r[0] < 0.06 * bh) return false;
+    let y0 = -1, y1 = -1;
+    for (let y = cy0; y < cy1; y++) for (let x = r[0]; x < r[1]; x++) if (mC[y * W + x]) { if (y0 < 0) y0 = y; y1 = y; break; }
+    return y0 >= 0 && y1 - y0 >= 0.6 * bh; });
+  const tol = Math.max(4, 0.2 * passo), sol = [];
+  for (const [, R] of cr) {
+    const bordi = [];
+    for (let k = 0; k < 5; k++) {
+      const g = R - (4 - k) * passo, m = cr.filter(r => Math.abs(r[1] - g) <= tol);
+      if (!m.length) break;
+      bordi.push(m.reduce((a, r) => Math.abs(r[1] - g) < Math.abs(a[1] - g) ? r : a)[1]);
+    }
+    if (bordi.length === 5 && !cr.some(r => Math.abs(r[1] - (R - 5 * passo)) <= tol)) sol.push(bordi);
+  }
+  if (sol.length !== 1) return no('posizione ' + sol.length);
+  let out = '';
+  for (const tx1 of sol[0]) {
+    const tx0 = tx1 - cwm; let bdx = 0, bdy = 0, best = -1e9, ok = false;
+    for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+      const y0 = cy0 + dy, x0 = tx0 + dx;
+      if (y0 < 0 || y0 + bh > H || x0 < 0 || x0 + cwm > W) continue;
+      let sc = 0;
+      for (let y = 0; y < bh; y++) for (let x = 0; x < cwm; x++) if (mC[(y0 + y) * W + x0 + x]) sc += gen[y * cwm + x] ? 1 : -0.5;
+      if (sc > best) { best = sc; bdx = dx; bdy = dy; ok = true; }
+    }
+    if (!ok) return no('bordo');
+    const zone = [[], [], [], [], [], [], []];                            // solo la parte centrale di ogni segmento
+    for (let y = 0; y < bh; y++) for (let x = 0; x < cwm; x++) {
+      if (!gen[y * cwm + x]) continue;
+      const v = y / bh, u = x / cwm + 0.12 * (v - 0.5), p = (cy0 + bdy + y) * W + tx0 + bdx + x;
+      if (v < 0.2 && u > 0.3 && u < 0.68) zone[0].push(p);
+      if (u > 0.6 && v > 0.18 && v < 0.4) zone[1].push(p);
+      if (u > 0.55 && v > 0.6 && v < 0.82) zone[2].push(p);
+      if (v > 0.8 && u > 0.25 && u < 0.6) zone[3].push(p);
+      if (u < 0.4 && v > 0.6 && v < 0.82) zone[4].push(p);
+      if (u < 0.45 && v > 0.18 && v < 0.4) zone[5].push(p);
+      if (v > 0.43 && v < 0.57 && u > 0.35 && u < 0.65) zone[6].push(p);
+    }
+    let k = '';
+    for (const z of zone) {
+      if (z.length < 3) return no('zona vuota');
+      let n = 0; for (const p of z) n += mC[p];
+      const f = n / z.length; if (f >= 0.4) k += '1'; else if (f <= 0.25) k += '0'; else return no('incerto');
+    }
+    if (!SEG7[k]) return no('forma');
+    out += SEG7[k];
+  }
+  return out.length === 5 && out !== '88888' ? out : no('88888');
+}
+
 async function apriDisplay() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('questo browser non da\' accesso alla fotocamera');
   const stream = await navigator.mediaDevices.getUserMedia({audio: false,
@@ -458,8 +610,8 @@ async function apriDisplay() {
   return new Promise(risolvi => {
     let finito = false; const t0 = Date.now(); let storia = [];
     const chiudi = v => { if (finito) return; finito = true; stream.getTracks().forEach(t => t.stop()); ov.remove(); risolvi(v); };
-    const consegna = (cv, come) => { guida.classList.add('ok'); if (navigator.vibrate) navigator.vibrate(60);
-      cv.toBlob(b => chiudi(b ? {blob: b, url: URL.createObjectURL(b), come} : null), 'image/jpeg', 0.8); };
+    const consegna = (cv, come, numero) => { guida.classList.add('ok'); if (navigator.vibrate) navigator.vibrate(60);
+      cv.toBlob(b => chiudi(b ? {blob: b, url: URL.createObjectURL(b), come, numero: numero || null} : null), 'image/jpeg', 0.8); };
     ov.querySelector('#annD').onclick = () => chiudi(null);
     ov.querySelector('#scattaD').onclick = () => {           // ripiego manuale: il piu' nitido degli ultimi 0,5 s
       const ult = storia.filter(e => Date.now() - e.t < 600);
@@ -483,7 +635,7 @@ async function apriDisplay() {
           const [ink, nit] = inchiostro(gr, piccola.width, piccola.height, v);
           let nb = 0; for (let i = 1; i < gr.length; i++) nb += Math.abs(gr[i] - gr[i - 1]); nb /= gr.length;   // nitidezza di tutto il riquadro
           guida.style.borderColor = v ? '#facc15' : '#fff';
-          storia.push({t, s: ink, nit, nb, cv}); storia = storia.filter(e => t - e.t < 16000);
+          storia.push({t, s: ink, nit, nb, cv, reg: [ix * sc, iy * sc, iw * sc, ih * sc]}); storia = storia.filter(e => t - e.t < 16000);
           window._diag = storia.map(e => [e.t - t0, Math.round(e.s * 1000) / 10, Math.round(e.nb * 10) / 10]);
           for (const e of storia) if (t - e.t > 3500) e.cv = null;            // tengo le immagini solo degli ultimi 3,5 s
           // firma: TEST (molti segmenti, breve: <= 0,75 s) + VUOTO (breve, nitido: non uno sfocato), poi di
@@ -507,7 +659,21 @@ async function apriDisplay() {
                 const cand = S.filter(e => e.cv && e.t >= on - 1900 && e.t <= on - 450);
                 const mc = cand.length ? ord(cand.map(e => e.s))[cand.length >> 1] : 0;
                 const fermi = cand.filter(e => Math.abs(e.s - mc) <= 0.12 * mc);
-                if (fermi.length && picco >= 1.04 * mc) return consegna(fermi.reduce((a, e) => e.nit > a.nit ? e : a).cv, 'presa in automatico');
+                if (fermi.length && picco >= 1.04 * mc) {
+                  let numero = null;
+                  try {                                                   // cifre: stampo dal test, voti dai fotogrammi fermi
+                    const test = S.filter(e => e.cv && e.t >= on && e.t <= S[j].t).reduce((a, e) => (!a || e.s > a.s) ? e : a, null);
+                    if (test) {
+                      const mT = maschera7(grigio(test.cv, ...test.reg, 480)), voti = {};
+                      window._perche = [];
+                      for (const e of fermi) { const mC = maschera7(grigio(e.cv, ...e.reg, 480)); const n = leggiCifre(mT, mC); if (n) voti[n] = (voti[n] || 0) + 1; }
+                      const v = Object.entries(voti).sort((a, b) => b[1] - a[1]);
+                      if (v.length && v[0][1] >= 2 && (v.length === 1 || v[1][1] < v[0][1])) numero = v[0][0];
+                      window._voti = voti;
+                    }
+                  } catch (er) { console.warn('cifre', er); }
+                  return consegna(fermi.reduce((a, e) => e.nit > a.nit ? e : a).cv, 'presa in automatico', numero);
+                }
               }
             }
           }
@@ -790,10 +956,20 @@ function vistaCalorifero(c, id) {
       <button class="btn sec pic" id="manoD">⌨ Scrivi il consumo a mano</button>
       <button class="btn sec pic" id="saltaD">Display spento o illeggibile</button>`;
   }
+  function htmlRevisione(f, sfx) {
+    if (f.numero) return `<div class="sez"><img class="fotodisp" src="${f.url}" alt="foto del display">
+      <div class="esito ok"><span class="tit">Consumo letto in automatico</span><b class="big">${esc(f.numero)}</b><span>Controlla che sia uguale al numero nella foto.</span></div>
+      <button class="btn pri" id="okF${sfx}">✓ Giusto</button>
+      <div class="riga"><button class="btn sec pic" id="rifF${sfx}">↻ Rifai</button><button class="btn sec pic" id="scriviF${sfx}">✏ Correggi</button></div></div>`;
+    return `<div class="sez"><img class="fotodisp" src="${f.url}" alt="foto del display">
+      <p>Foto ${esc(f.come || '')}: il numero non l’ho letto con sicurezza. Si vede bene il <b>consumo</b>, senza lettere né simboli accanto? <b>Se accanto al numero c’è una M (consumo storico), MD, P o C non è il consumo: Rifai.</b></p>
+      <button class="btn pri" id="okF${sfx}">✓ Foto giusta (il numero lo legge l’ufficio)</button>
+      <div class="riga"><button class="btn sec pic" id="rifF${sfx}">↻ Rifai la foto</button><button class="btn sec pic" id="scriviF${sfx}">⌨ Scrivi il consumo</button></div></div>`;
+  }
   function salvaDisplay(d) { mem.set(kP1, Object.assign({}, p1(), {display: Object.assign({ora: new Date().toISOString()}, d)})); disegna(); }
-  function chiediConsumo(conFoto) {
+  function chiediConsumo(conFoto, iniziale) {
     $('#esito').innerHTML = `<div class="sez"><label class="campo" for="cons">Consumo che leggi sul display (solo le cifre)
-      <input class="txt" id="cons" inputmode="numeric" maxlength="7" autocomplete="off"></label>
+      <input class="txt" id="cons" inputmode="numeric" maxlength="7" autocomplete="off" value="${esc(iniziale || '')}"></label>
       <button class="btn pri pic" id="okCons">Conferma il consumo</button></div>`;
     $('#cons').focus();
     una($('#okCons'), () => { const v = $('#cons').value.replace(/\D/g, ''); if (!v) { $('#cons').focus(); return; }
@@ -810,18 +986,17 @@ function vistaCalorifero(c, id) {
     try { f = await apriDisplay(); } catch (err) {
       $('#esito').innerHTML = '<div class="esito ko"><span class="tit">Fotocamera non disponibile</span>' + esc(err.message || err) + '</div>'; return; }
     if (!f) return;
-    $('#esito').innerHTML = `<div class="sez"><img class="fotodisp" src="${f.url}" alt="foto del display">
-      <p>Foto ${esc(f.come || '')}: si vede bene il numero del <b>consumo</b>, senza lettere né simboli accanto? <b>Se accanto al numero c’è una M (consumo storico), MD, P o C non è il consumo: Rifai.</b></p>
-      <button class="btn pri" id="okF2">✓ Foto giusta</button>
-      <div class="riga"><button class="btn sec pic" id="rifF2">↻ Rifai la foto</button><button class="btn sec pic" id="scriviF2">⌨ Scrivi il consumo</button></div></div>`;
+    $('#esito').innerHTML = htmlRevisione(f, '2');
     const nome = id + '-' + slug(cfg.dispositivo) + '-' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14) + '.jpg';
     const tieni = async () => { try { await fotoDB.put(kFoto, {cond: c, id, blob: f.blob, pronta: true, nome}); } catch (e) { avviso('Foto non salvata: ' + e.message); } };
-    una($('#okF2'), async () => { await tieni(); aggiornaRec({foto_display: 'foto/' + nome, display_metodo: 'foto approvata (dopo la posa)'}); disegna(); });
+    una($('#okF2'), async () => { await tieni();
+      aggiornaRec(f.numero ? {consumo_vecchio: f.numero, foto_display: 'foto/' + nome, display_metodo: 'letto in automatico, confermato (dopo la posa)'}
+                           : {foto_display: 'foto/' + nome, display_metodo: 'foto approvata (dopo la posa)'}); disegna(); });
     $('#rifF2').onclick = () => consumoDopo();
     $('#scriviF2').onclick = async () => {
       await tieni();
       $('#esito').innerHTML = `<div class="sez"><label class="campo" for="cons2">Consumo che leggi sul display (solo le cifre)
-        <input class="txt" id="cons2" inputmode="numeric" maxlength="7" autocomplete="off"></label><button class="btn pri pic" id="okC2">Conferma il consumo</button></div>`;
+        <input class="txt" id="cons2" inputmode="numeric" maxlength="7" autocomplete="off" value="${esc(f.numero || '')}"></label><button class="btn pri pic" id="okC2">Conferma il consumo</button></div>`;
       $('#cons2').focus();
       una($('#okC2'), () => { const v = $('#cons2').value.replace(/\D/g, ''); if (!v) return;
         aggiornaRec({consumo_vecchio: v, foto_display: 'foto/' + nome, display_metodo: 'foto + scritto (dopo la posa)'}); disegna(); });
@@ -833,16 +1008,13 @@ function vistaCalorifero(c, id) {
       try { f = await apriDisplay(); } catch (err) {
         $('#esito').innerHTML = '<div class="esito ko"><span class="tit">Fotocamera non disponibile</span>' + esc(err.message || err) + '<br>Scrivi il consumo a mano.</div>'; return; }
       if (!f) return;
-      $('#esito').innerHTML = `<div class="sez"><img class="fotodisp" src="${f.url}" alt="foto del display">
-        <p>Foto ${esc(f.come || "")}: si vede bene il numero del <b>consumo</b>, senza lettere né simboli accanto? <b>Se accanto al numero c’è una M (consumo storico), MD, P o C non è il consumo: Rifai.</b></p>
-        <button class="btn pri" id="okF">✓ Foto giusta</button>
-        <div class="riga"><button class="btn sec pic" id="rifF">↻ Rifai la foto</button><button class="btn sec pic" id="scriviF">⌨ Scrivi il consumo</button></div></div>`;
+      $('#esito').innerHTML = htmlRevisione(f, '');
       const tieni = async () => { await fotoDB.put(kFoto, {cond: c, id, blob: f.blob, pronta: false,
         nome: id + '-' + slug(cfg.dispositivo) + '-' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14) + '.jpg'}); };
       una($('#okF'), async () => { try { await tieni(); } catch (e) { avviso('Foto non salvata nel telefono: ' + e.message); }
-        salvaDisplay({consumo: '', foto: true, metodo: 'foto approvata'}); });
+        salvaDisplay(f.numero ? {consumo: f.numero, foto: true, metodo: 'letto in automatico, confermato'} : {consumo: '', foto: true, metodo: 'foto approvata'}); });
       $('#rifF').onclick = () => $('#fotoD').click();
-      $('#scriviF').onclick = async () => { try { await tieni(); } catch (e) {} chiediConsumo(true); };
+      $('#scriviF').onclick = async () => { try { await tieni(); } catch (e) {} chiediConsumo(true, f.numero); };
     });
     $('#manoD').onclick = () => chiediConsumo(false);
     $('#saltaD').onclick = () => {
