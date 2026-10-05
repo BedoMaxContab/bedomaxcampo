@@ -89,6 +89,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
 .scan .guida.ok{border-color:#4ade80}
 .scan .guida.qr{left:50%;right:auto;top:50%;height:auto;width:min(70vw,70vh);aspect-ratio:1;transform:translate(-50%,-50%)}
 .scan .guida.disp{top:33%;height:19%;left:5%;right:5%}
+.scan .guida.lcd{top:38%;height:14%;left:12%;right:12%;border-style:dashed;box-shadow:none;transition:all .15s}
 .fotodisp{width:100%;border-radius:12px;border:3px solid var(--line);display:block}
 .scan .msg{position:absolute;left:16px;right:16px;top:calc(env(safe-area-inset-top,0px) + 16px);color:#fff;font-weight:700;font-size:18px;text-align:center;text-shadow:0 1px 3px #000}
 .scan .sotto{position:absolute;left:16px;right:16px;bottom:calc(env(safe-area-inset-bottom,0px) + 18px);display:flex;flex-direction:column;gap:10px}
@@ -115,7 +116,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.9.0';
+const VERSIONE = '0.9.1';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -495,6 +496,45 @@ function vetroDisplay(gr, w, h) {            // gr: luminosita' (Uint8Array w*h)
   }
   return null;
 }
+/* 0.9.1 (BEDO: "il sistema campo fatica sempre a inquadrare"): la finestrella del display si cerca in TUTTA
+   l'inquadratura, non piu' nel riquadro guida. LCD = macchia CHIARA larga (2-7 volte l'altezza) circondata da una
+   cornice SCURA (il bordo del display). Ritorna [x,y,w,h] nel sistema di gr oppure null. */
+function trovaLCD(gr, w, h) {
+  const ord = Float32Array.from(gr).sort(), med = ord[ord.length >> 1];
+  let best = null;
+  for (const f of [0.55, 0.75]) {
+    const scuro = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) scuro[i] = gr[i] < f * med ? 1 : 0;
+    const lab = new Uint8Array(w * h), coda = new Int32Array(w * h);
+    for (let i0 = 0; i0 < w * h; i0++) {
+      if (scuro[i0] || lab[i0]) continue;
+      let qa = 0, qb = 0, x0 = w, y0 = h, x1 = 0, y1 = 0, bordo = false; coda[qb++] = i0; lab[i0] = 1;
+      while (qa < qb) {
+        const i = coda[qa++], x = i % w, y = (i / w) | 0;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        if (x === 0 || y === 0 || x === w - 1 || y === h - 1) bordo = true;
+        if (x > 0 && !scuro[i - 1] && !lab[i - 1]) { lab[i - 1] = 1; coda[qb++] = i - 1; }
+        if (x < w - 1 && !scuro[i + 1] && !lab[i + 1]) { lab[i + 1] = 1; coda[qb++] = i + 1; }
+        if (y > 0 && !scuro[i - w] && !lab[i - w]) { lab[i - w] = 1; coda[qb++] = i - w; }
+        if (y < h - 1 && !scuro[i + w] && !lab[i + w]) { lab[i + w] = 1; coda[qb++] = i + w; }
+      }
+      const bw = x1 - x0 + 1, bh = y1 - y0 + 1, n = qb;
+      if (bordo || bw < 0.07 * w || bh < 5 || bw / bh < 2 || bw / bh > 7 || n < 0.45 * bw * bh) continue;
+      // cornice scura: righe sopra/sotto e colonne ai lati, a 2-4 px dal bordo della macchia
+      let ds = 0, ts = 0;
+      for (let d = 2; d <= 4; d++) for (let x = x0; x <= x1; x++) { ts += 2;
+        if (y0 - d >= 0 && scuro[(y0 - d) * w + x]) ds++; if (y1 + d < h && scuro[(y1 + d) * w + x]) ds++; }
+      let dl = 0, tl = 0;
+      for (let d = 2; d <= 4; d++) for (let y = y0; y <= y1; y++) { tl += 2;
+        if (x0 - d >= 0 && scuro[y * w + x0 - d]) dl++; if (x1 + d < w && scuro[y * w + x1 + d]) dl++; }
+      if (ds < 0.55 * ts || dl < 0.35 * tl) continue;
+      const punti = bw * bh * (ds / ts);
+      if (!best || punti > best[4]) best = [x0, y0, bw, bh, punti];
+    }
+    if (best) break;
+  }
+  return best ? best.slice(0, 4) : null;
+}
 function inchiostro(gr, w, h, r) {           // frazione di pixel "segmento" (scuri e sottili) nella fascia centrale del vetro
   const W = 240, H = 90, c = new Float32Array(W * H);
   const [rx, ry, rw, rh] = r || [w * 0.1, h * 0.2, w * 0.8, h * 0.6];
@@ -665,13 +705,125 @@ function leggiCifre(T, C) {               // T, C: maschere {m,W,H} del test e d
   return out.length === 5 && out !== '88888' ? out : no('88888');
 }
 
+/* 0.9.1: lettura delle cifre SENZA il fotogramma del test. Dalla sola maschera del display:
+   - pezzi "alti" = cifre (anche l'1, sottile); banda = altezza delle cifre; larghezza di cella = mediana delle cifre larghe;
+   - devono esserci ESATTAMENTE 5 cifre a passo regolare e NIENTE a sinistra della prima (M, MD, P, C, c, FS hanno sempre
+     qualcosa a sinistra: NON sono il consumo);
+   - 7 zone per cella (segmenti disegnati, con la pendenza delle cifre): acceso >= 0,40, spento <= 0,18, altrimenti incerto.
+   -> {numero} | {prefisso:true} | null */
+function mascheraLCD(gr) {              // interno del display -> maschera dei segmenti (cifre scure rispetto al FONDO LOCALE)
+  const {o, W, H} = gr, r = Math.max(12, Math.round(0.07 * W));          // chiusura larga: riempie le cifre -> stima del fondo
+  const fil = (src, f) => { const t = new Float32Array(W * H), u = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let v = src[y * W + x];
+      for (let k = Math.max(0, x - r); k <= Math.min(W - 1, x + r); k++) v = f(v, src[y * W + k]); t[y * W + x] = v; }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let v = t[y * W + x];
+      for (let k = Math.max(0, y - r); k <= Math.min(H - 1, y + r); k++) v = f(v, t[k * W + x]); u[y * W + x] = v; }
+    return u; };
+  const fondo = fil(fil(o, Math.max), Math.min), diff = new Float32Array(W * H);
+  for (let i = 0; i < diff.length; i++) diff[i] = fondo[i] - o[i];
+  const ord = Float32Array.from(diff).sort(), p98 = ord[(ord.length * 0.98) | 0], soglia = Math.max(8, 0.4 * p98);
+  // bordo del ritaglio azzerato (resti della cornice del display), poi via i pezzi troppo larghi/piatti e i puntini
+  const bx = Math.round(0.03 * W), by = Math.round(0.08 * H);
+  const m = new Uint8Array(W * H); let scuri = 0;
+  for (let y = by; y < H - by; y++) for (let x = bx; x < W - bx; x++) { const i = y * W + x; m[i] = diff[i] > soglia ? 1 : 0; scuri += m[i]; }
+  window._otsu = [Math.round(p98), Math.round(1000 * scuri / m.length) / 10];
+  if (p98 < 12 || scuri < 0.02 * m.length || scuri > 0.45 * m.length) return {m: new Uint8Array(W * H), W, H, vuoto: true};
+  const lab = new Uint8Array(W * H), q = new Int32Array(W * H), out = new Uint8Array(W * H);
+  for (let i0 = 0; i0 < m.length; i0++) {
+    if (!m[i0] || lab[i0]) continue;
+    let a = 0, b = 0, x0 = W, y0 = H, x1 = 0, y1 = 0; q[b++] = i0; lab[i0] = 1;
+    while (a < b) { const i = q[a++], x = i % W, y = (i / W) | 0;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue; const k = yy * W + xx;
+        if (m[k] && !lab[k]) { lab[k] = 1; q[b++] = k; } } }
+    const w = x1 - x0 + 1, h = y1 - y0 + 1;
+    if (b >= 6 && w <= 0.3 * W && !(w > 0.12 * W && h < 0.12 * H)) for (let k = 0; k < b; k++) out[q[k]] = 1;
+  }
+  return {m: out, W, H};
+}
+function leggiCifreSolo(M) {
+  if (M.vuoto) return null;
+  const {m, W, H} = M, no = r => { (window._perche = window._perche || []).push(r); return null; };
+  const comp = [], lab = new Uint8Array(W * H), q = new Int32Array(W * H);
+  for (let i0 = 0; i0 < m.length; i0++) {
+    if (!m[i0] || lab[i0]) continue;
+    let a = 0, b = 0, x0 = W, y0 = H, x1 = 0, y1 = 0; q[b++] = i0; lab[i0] = 1;
+    while (a < b) { const i = q[a++], x = i % W, y = (i / W) | 0;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue; const k = yy * W + xx;
+        if (m[k] && !lab[k]) { lab[k] = 1; q[b++] = k; } } }
+    if (b >= 6) comp.push({x0, y0, x1, y1, w: x1 - x0 + 1, h: y1 - y0 + 1, n: b});
+  }
+  if (!comp.length) return no('vuoto');
+  const hmax = Math.max(...comp.map(c => c.h));
+  if (hmax < 0.18 * H) return no('cifre piccole');
+  const med = a => { const s = [...a].sort((p, r) => p - r), n = s.length; return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2; };
+  const cifre = comp.filter(c => c.h >= 0.62 * hmax).sort((p, r) => p.x1 - r.x1);
+  const singole = cifre.filter(c => c.w >= 0.3 * hmax && c.w <= 0.95 * hmax);
+  if (!singole.length) return no('solo 1');
+  const cw = med(singole.map(c => c.w)), gap = 0.3 * cw;
+  const by0 = med(cifre.map(c => c.y0)), by1 = med(cifre.map(c => c.y1)), bh = by1 - by0 + 1;   // banda robusta (mediane: le code di sporco non contano)
+  if (bh < 1.1 * cw || bh > 3.2 * cw) return no('proporzioni');
+  // celle: un pezzo largo (cifre attaccate per la sfocatura) vale piu' celle; pezzi uno sopra l'altro = stessa cella
+  const celle = [];
+  for (const c of cifre) {
+    const k = Math.max(1, Math.round((c.w + gap) / (cw + gap)));
+    for (let j = 0; j < k; j++) {
+      const x1 = c.x1 - j * (cw + gap), u = celle.find(q => Math.abs(q.x1 - x1) < 0.3 * cw);
+      if (!u) celle.push({x1, x0: x1 - cw + 1});
+    }
+  }
+  celle.sort((p, r) => p.x1 - r.x1);
+  if (celle.length !== 5) return no('cifre ' + celle.length);
+  const passi = celle.slice(1).map((c, i) => c.x1 - celle[i].x1), passo = med(passi);
+  if (passo < 1.05 * cw || passo > 2.2 * cw || passi.some(p => Math.abs(p - passo) > 0.25 * passo)) return no('passo');
+  // niente a sinistra della prima cifra (prefissi M/MD/P/C/c/FS): pezzi non minuscoli nella fascia della banda
+  const sx = celle[0].x0, pre = comp.some(c => c.x1 < sx - 0.1 * cw && c.x1 > sx - 2.6 * cw && c.h >= 0.22 * bh && c.w >= 0.15 * cw &&
+                                          c.y1 > by0 - 0.3 * bh && c.y0 < by1 + 0.3 * bh);
+  if (pre) return {prefisso: true};
+  let out = '';
+  for (const c of celle) {
+    const x0 = Math.round(c.x0), zone = [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0]];
+    for (let y = Math.round(by0); y <= Math.round(by1); y++) for (let x = x0 - 1; x <= Math.round(c.x1) + 1; x++) {
+      if (y < 0 || y >= H) continue;
+      if (x < 0 || x >= W) continue;
+      const v = (y - by0) / bh, u = (x - x0) / cw + 0.12 * (v - 0.5), on = m[y * W + x];
+      const z = [];
+      if (v < 0.16 && u > 0.3 && u < 0.7) z.push(0);
+      if (u > 0.76 && v > 0.2 && v < 0.42) z.push(1);
+      if (u > 0.76 && v > 0.58 && v < 0.8) z.push(2);
+      if (v > 0.84 && u > 0.3 && u < 0.7) z.push(3);
+      if (u < 0.24 && v > 0.58 && v < 0.8) z.push(4);
+      if (u < 0.24 && v > 0.2 && v < 0.42) z.push(5);
+      if (v > 0.45 && v < 0.55 && u > 0.32 && u < 0.68) z.push(6);
+      for (const k of z) { zone[k][1]++; if (on) zone[k][0]++; }
+    }
+    // confronto con le 10 cifre: distanza dalle frazioni attese (acceso ~0,6, spento ~0,08); vince la piu' vicina
+    // solo se e' nettamente meglio della seconda (sfocatura: l'interno dello 0 si riempie un po', ma non come un 8)
+    const f = zone.map(([n, t]) => t < 4 ? -1 : n / t);
+    if (f.some(x => x < 0)) return no('zona');
+    const cand = [];
+    for (const [bits, cifra] of Object.entries(SEG7)) {
+      let d = 0; for (let k = 0; k < 7; k++) { const t = bits[k] === '1' ? 0.65 : 0.1; d += (f[k] - t) * (f[k] - t); }
+      cand.push([d, cifra]);
+    }
+    cand.sort((p, r) => p[0] - r[0]);
+    const seconda = cand.find(x => x[1] !== cand[0][1]);
+    if (cand[0][0] > 0.5 || !seconda || seconda[0] - cand[0][0] < 0.08) return no('incerto ' + f.map(x => x.toFixed(2)).join(',') + ' -> ' + cand[0][1] + '/' + (seconda ? seconda[1] : '?'));
+    out += cand[0][1];
+  }
+  return out === '88888' ? {prefisso: true} : {numero: out};
+}
+
 async function apriDisplay() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('questo browser non da\' accesso alla fotocamera');
   const stream = await navigator.mediaDevices.getUserMedia({audio: false,
     video: {facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080}}});
   const ov = document.createElement('div'); ov.className = 'scan';
-  ov.innerHTML = `<video playsinline muted autoplay></video><div class="guida disp"></div>
-    <div class="msg">Metti la FINESTRELLA del display dentro il riquadro e tieni fermo: il consumo lo prendo io (al massimo 30 secondi)</div>
+  ov.innerHTML = `<video playsinline muted autoplay></video><div class="guida lcd"></div>
+    <div class="msg">Inquadra il ripartitore da VICINO (il display largo come il riquadro) e tieni fermo: il consumo lo prendo io</div>
     <div class="sotto"><div class="stato">Tieni fermo…</div>
       <button class="btn pri" id="scattaD">📸 Scatta tu (se vedi il consumo e non scatta da solo)</button>
       <div class="riga"><button class="btn sec" id="torcia" hidden>Torcia</button><button class="btn sec" id="annD">Annulla</button></div></div>`;
@@ -684,103 +836,94 @@ async function apriDisplay() {
     if (cap.torch) { const t = ov.querySelector('#torcia'); t.hidden = false; let acc = false;
       t.onclick = () => { acc = !acc; traccia.applyConstraints({advanced: [{torch: acc}]}).catch(() => {}); }; }
   } catch (e) {}
-  const riquadro = () => {
+  const FW = 960;                                   // larghezza del fotogramma analizzato (tutta l'inquadratura)
+  const cerca = document.createElement('canvas'), gc = cerca.getContext('2d', {willReadFrequently: true});
+  const posiziona = (cvFull, lcd, kx) => {          // riquadro giallo sullo schermo dove ho trovato il display
     const vw = video.videoWidth, vh = video.videoHeight, W = ov.clientWidth, H = ov.clientHeight;
-    const k = Math.max(W / vw, H / vh), ox = (W - vw * k) / 2, oy = (H - vh * k) / 2, b = guida.getBoundingClientRect();
-    let x = (b.left - ox) / k, y = (b.top - oy) / k, w = b.width / k, h = b.height / k;
-    const mx = w * 0.12, my = h * 0.35;
-    x = Math.max(0, x - mx); y = Math.max(0, y - my); w = Math.min(vw - x, w + 2 * mx); h = Math.min(vh - y, h + 2 * my);
-    return [x, y, w, h];
+    const k = Math.max(W / vw, H / vh), ox = (W - vw * k) / 2, oy = (H - vh * k) / 2, s = k / kx;
+    if (!lcd) { guida.style.cssText = ''; return; }
+    guida.style.cssText = `left:${ox + lcd[0] * s}px;top:${oy + lcd[1] * s}px;width:${lcd[2] * s}px;height:${lcd[3] * s}px;right:auto;border-color:#facc15`;
   };
-  const SW = 320;                                   // larghezza di analisi
+  const SW = 320;                                   // larghezza di analisi del solo display
   const piccola = document.createElement('canvas'), gp = piccola.getContext('2d', {willReadFrequently: true});
+  let ultimoLcd = null, persi = 0;
   return new Promise(risolvi => {
-    let finito = false; const t0 = Date.now(); let storia = [], tentativi = 0, diag = [], ultimoGiro = 0;
+    let finito = false; const t0 = Date.now(); let storia = [], diag = [], voti = [], ultimoPrefisso = 0;
     const chiudi = v => { if (finito) return; finito = true; stream.getTracks().forEach(t => t.stop()); ov.remove(); risolvi(v); };
-    const consegna = (cv, come, numero) => { guida.classList.add('ok'); if (navigator.vibrate) navigator.vibrate(60);
-      cv.toBlob(b => chiudi(b ? {blob: b, url: URL.createObjectURL(b), come, numero: numero || null, diag: diag.slice(-6).join(' / ')} : null), 'image/jpeg', 0.8); };
+    const consegna = (e, come, numero) => { guida.classList.add('ok'); if (navigator.vibrate) navigator.vibrate(60);
+      const [rx, ry, rw, rh] = e.reg, cv = e.cv, out = document.createElement('canvas');        // foto = zona del display con un po' di ripartitore attorno
+      const x0 = Math.max(0, rx - rw * 0.3), y0 = Math.max(0, ry - rh * 0.6), x1 = Math.min(cv.width, rx + rw * 1.3), y1 = Math.min(cv.height, ry + rh * 1.6);
+      out.width = Math.round(x1 - x0); out.height = Math.round(y1 - y0); out.getContext('2d').drawImage(cv, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+      out.toBlob(b => chiudi(b ? {blob: b, url: URL.createObjectURL(b), come, numero: numero || null, diag: diag.slice(-6).join(' / ')} : null), 'image/jpeg', 0.85); };
     ov.querySelector('#annD').onclick = () => chiudi(null);
     ov.querySelector('#scattaD').onclick = () => {           // ripiego manuale: il piu' nitido degli ultimi 0,5 s
       const ult = storia.filter(e => Date.now() - e.t < 600);
-      if (ult.length) consegna(ult.reduce((a, e) => e.nit > a.nit ? e : a).cv, 'scattata dal tecnico');
+      if (ult.length) consegna(ult.reduce((a, e) => e.nit > a.nit ? e : a), 'scattata dal tecnico');
     };
     const giro = () => {
       if (finito) return;
       try {
         if (video.readyState >= 2 && video.videoWidth) {
-          const [x, y, w, h] = riquadro(); const t = Date.now();
-          const cv = document.createElement('canvas'); const sc = Math.min(1, 640 / w);
-          cv.width = Math.round(w * sc); cv.height = Math.round(h * sc);
-          cv.getContext('2d').drawImage(video, x, y, w, h, 0, 0, cv.width, cv.height);
-          // analisi solo dentro il riquadro giallo/bianco (senza il margine della foto)
-          const ix = w * 0.12 / 1.24, iy = h * 0.35 / 1.70, iw = w / 1.24, ih = h / 1.70;
+          const t = Date.now(), vw = video.videoWidth, vh = video.videoHeight;
+          const kx = Math.min(1, FW / vw);
+          const cv = document.createElement('canvas'); cv.width = Math.round(vw * kx); cv.height = Math.round(vh * kx);
+          cv.getContext('2d').drawImage(video, 0, 0, cv.width, cv.height);
+          // 1) cerco la finestrella del display in tutta l'inquadratura (a bassa risoluzione)
+          const CW = 300, ks = CW / cv.width; cerca.width = CW; cerca.height = Math.round(cv.height * ks);
+          gc.drawImage(cv, 0, 0, cerca.width, cerca.height);
+          const dc = gc.getImageData(0, 0, cerca.width, cerca.height).data, gs = new Uint8Array(cerca.width * cerca.height);
+          for (let i = 0, j = 0; i < gs.length; i++, j += 4) gs[i] = (dc[j] * 3 + dc[j + 1] * 6 + dc[j + 2]) / 10;
+          let lcd = trovaLCD(gs, cerca.width, cerca.height);
+          if (lcd) { ultimoLcd = lcd; persi = 0; } else if (ultimoLcd && persi < 4) { lcd = ultimoLcd; persi++; }   // un buco di qualche fotogramma (test/vuoto) non fa perdere il display
+          posiziona(cv, lcd, ks);
+          const troppoPiccolo = lcd && lcd[2] < 0.22 * cerca.width;
+          if (!lcd || troppoPiccolo) {
+            storia = storia.filter(e => t - e.t < 16000);
+            const sec = Math.round((t - t0) / 1000);
+            stato.textContent = (!lcd ? 'Non vedo il display: inquadra il ripartitore… ' : 'Display troppo piccolo: AVVICINATI… ') + sec + ' s';
+            setTimeout(giro, 110); return;
+          }
+          // 2) ritaglio del display (con margine) dal fotogramma grande
+          const mx = lcd[2] * 0.12, my = lcd[3] * 0.35;
+          const ix = Math.max(0, (lcd[0] - mx) / ks), iy = Math.max(0, (lcd[1] - my) / ks);
+          const iw = Math.min(cv.width - ix, (lcd[2] + 2 * mx) / ks), ih = Math.min(cv.height - iy, (lcd[3] + 2 * my) / ks);
           piccola.width = SW; piccola.height = Math.max(20, Math.round(SW * ih / iw));
-          gp.drawImage(cv, ix * sc, iy * sc, iw * sc, ih * sc, 0, 0, piccola.width, piccola.height);
+          gp.drawImage(cv, ix, iy, iw, ih, 0, 0, piccola.width, piccola.height);
           const d = gp.getImageData(0, 0, piccola.width, piccola.height).data, gr = new Uint8Array(piccola.width * piccola.height);
           for (let i = 0, j = 0; i < gr.length; i++, j += 4) gr[i] = (d[j] * 3 + d[j + 1] * 6 + d[j + 2]) / 10;
+          const sc = 1;
           const v = vetroDisplay(gr, piccola.width, piccola.height);
           const [ink, nit] = inchiostro(gr, piccola.width, piccola.height, v);
-          let nb = 0; for (let i = 1; i < gr.length; i++) nb += Math.abs(gr[i] - gr[i - 1]); nb /= gr.length;   // nitidezza di tutto il riquadro
-          guida.style.borderColor = v ? '#facc15' : '#fff';
-          storia.push({t, s: ink, nit, nb, cv, reg: [ix * sc, iy * sc, iw * sc, ih * sc]}); storia = storia.filter(e => t - e.t < 16000);
-          window._diag = storia.map(e => [e.t - t0, Math.round(e.s * 1000) / 10, Math.round(e.nb * 10) / 10]);
-          for (const e of storia) if (t - e.t > 3500) e.cv = null;            // tengo le immagini solo degli ultimi 3,5 s
-          // firma: TEST (molti segmenti, breve: <= 0,75 s) + VUOTO (breve, nitido: non uno sfocato), poi di
-          // nuovo una schermata. Regole provate sui 2 video reali (cornice scura 92591150 e chiara 92873262), anche con il
-          // riquadro spostato dell'8% (prototipo /home/claude/display/rules.py). 0.6.2 prendeva a volte la "storica".
-          const S = storia, ord = a => [...a].sort((p, q) => p - q), med = ord(S.map(e => e.s))[S.length >> 1];
-          const mnb = ord(S.map(e => e.nb))[S.length >> 1];
-          if (S.length > 12 && t - S[0].t >= 4000 && ink > 0.6 * med) {
-            let j = S.length - 2, salti = 0;
-            while (j >= 0 && S[j].s >= 0.5 * med && S[j].s < 0.6 * med && salti < 2) { j--; salti++; }   // passaggio
-            const fv = j;
-            while (j >= 0 && S[j].s < 0.5 * med && S[j].nb >= 0.6 * mnb) j--;
-            const sfocato = j >= 0 && S[j].s < 0.5 * med;                    // basso ma sfocato: non e' il vuoto
-            const durV = fv > j ? S[fv].t - S[j + 1].t + 110 : 0;
-            if (!sfocato && j >= 0 && durV >= 100 && durV <= 750) {
-              let k = j, picco = S[k].s;
-              while (k >= 0 && S[k].s >= 0.93 * Math.max(picco, S[k].s)) { picco = Math.max(picco, S[k].s); k--; }
-              const durT = S[j].t - S[k + 1].t + 110, on = S[k + 1].t;
-              if (picco > 1.15 * med && durT <= 750) {
-                // consumo = schermata FERMA prima del test: salto l'ultimo mezzo secondo (passaggio verso 888888)
-                const cand = S.filter(e => e.cv && e.t >= on - 1900 && e.t <= on - 450);
-                const mc = cand.length ? ord(cand.map(e => e.s))[cand.length >> 1] : 0;
-                // 0.9.0: fotogrammi fermi E nitidi (nb almeno il 75% della nitidezza mediana): un mosso non va bene
-                const fermi = cand.filter(e => Math.abs(e.s - mc) <= 0.12 * mc && e.nb >= 0.75 * mnb);
-                if (fermi.length && picco >= 1.04 * mc && t - ultimoGiro > 2500) {
-                  ultimoGiro = t;
-                  let numero = null;
-                  try {                                                   // cifre: stampo dal test, voti dai fotogrammi fermi
-                    const test = S.filter(e => e.cv && e.t >= on && e.t <= S[j].t).reduce((a, e) => (!a || e.s > a.s) ? e : a, null);
-                    if (test) {
-                      const mT = maschera7(grigio(test.cv, ...test.reg, 480)), voti = {};
-                      window._perche = [];
-                      for (const e of fermi) { const mC = maschera7(grigio(e.cv, ...e.reg, 480)); const n = leggiCifre(mT, mC); if (n) voti[n] = (voti[n] || 0) + 1; }
-                      const v = Object.entries(voti).sort((a, b) => b[1] - a[1]);
-                      if (v.length && v[0][1] >= 2 && (v.length === 1 || v[1][1] < v[0][1])) numero = v[0][0];
-                      window._voti = voti;
-                    }
-                  } catch (er) { console.warn('cifre', er); diag.push('errore ' + er.message); }
-                  // 0.9.0 (BEDO 05/10: foto MD / mosse passate come buone): si consegna SOLO se le cifre sono state lette
-                  if (numero) return consegna(fermi.reduce((a, e) => e.nit > a.nit ? e : a).cv, 'presa in automatico', numero);
-                  tentativi++;
-                  const perche = (window._perche || []).reduce((a, r) => { a[r] = (a[r] || 0) + 1; return a; }, {});
-                  diag.push('giro ' + tentativi + ': ' + fermi.length + ' fotogrammi, voti ' + JSON.stringify(window._voti || {}) + ', motivi ' + JSON.stringify(perche));
-                  stato.textContent = 'Ho visto il giro del display ma non ho letto bene le cifre: tieni più fermo, più vicino e senza riflessi…';
-                } else if (cand.length && picco >= 1.04 * mc && t - ultimoGiro > 2500) {
-                  ultimoGiro = t; tentativi++; diag.push('giro ' + tentativi + ': tutti i fotogrammi mossi');
-                  stato.textContent = 'Fotogrammi mossi: tieni il telefono più fermo (appoggialo se puoi)…';
-                }
-              }
+          let nb = 0; for (let i = 1; i < gr.length; i++) nb += Math.abs(gr[i] - gr[i - 1]); nb /= gr.length;
+          storia.push({t, s: ink, nit, nb, cv, reg: [ix, iy, iw, ih]}); storia = storia.filter(e => t - e.t < 16000);
+          for (const e of storia) if (t - e.t > 3500) e.cv = null;
+          // 3) LETTURA DELLE CIFRE su questo fotogramma (interno del display): 5 cifre senza nulla a sinistra = consumo
+          const jx = (lcd[0] + lcd[2] * 0.03) / ks, jy = (lcd[1] + lcd[3] * 0.08) / ks, jw = lcd[2] * 0.94 / ks, jh = lcd[3] * 0.84 / ks;
+          window._perche = [];
+          const let_ = leggiCifreSolo(mascheraLCD(grigio(cv, jx, jy, jw, jh, 480)));
+          voti = voti.filter(e => t - e.t < 3000);
+          if (let_ && let_.numero) voti.push({t, n: let_.numero, nit, e: storia[storia.length - 1]});
+          else if (let_ && let_.prefisso) { ultimoPrefisso = t; }
+          window._diag = {voti: voti.map(e => e.n), perche: window._perche};
+          const conta = {}; for (const e of voti) conta[e.n] = (conta[e.n] || 0) + 1;
+          const ord = Object.entries(conta).sort((p, q) => q[1] - p[1]);
+          if (ord.length && ord[0][1] >= 3 && (ord.length === 1 || ord[0][1] >= 3 * ord[1][1])) {
+            const buoni = voti.filter(e => e.n === ord[0][0] && e.e && e.e.cv);
+            if (buoni.length && buoni[buoni.length - 1].t - buoni[0].t >= 250) {
+              diag.push('letto ' + ord[0][0] + ' su ' + ord[0][1] + ' fotogrammi' + (ord.length > 1 ? ' (altri: ' + ord.slice(1).map(x => x[0] + 'x' + x[1]).join(' ') + ')' : ''));
+              return consegna(buoni.reduce((a, e) => e.nit > a.nit ? e : a).e, 'letta in automatico', ord[0][0]);
             }
           }
+          if (let_ && let_.prefisso) stato.textContent = 'Vedo il display: aspetto la schermata del CONSUMO (senza lettere)… ' + Math.round((t - t0) / 1000) + ' s';
+          else if (voti.length) stato.textContent = 'Sto leggendo le cifre, tieni fermo… ' + Math.round((t - t0) / 1000) + ' s';
+          else {
           const sec = Math.round((t - t0) / 1000);
-          if (t - ultimoGiro > 2500 || sec >= 40)
-            stato.textContent = (v ? 'Display trovato, tieni fermo… ' : 'Metti il display nel riquadro… ') + sec + ' s' +
-              (sec >= 40 || tentativi >= 3 ? ' — non riesco a leggere le cifre: premi "Scatta tu" quando vedi il consumo e poi scrivilo' : '');
+            stato.textContent = 'Display trovato, tieni fermo… ' + sec + ' s' +
+              (sec >= 40 ? ' — non riesco a leggere le cifre: premi "Scatta tu" quando vedi il consumo e poi scrivilo' : '');
+          }
         }
       } catch (e) { stato.textContent = 'Errore: ' + e.message; }
-      setTimeout(giro, 110);
+      setTimeout(giro, 40);
     };
     giro();
   });
