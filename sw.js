@@ -1,6 +1,6 @@
 // BedoMaxCampo - service worker: tiene l'app nel telefono/tablet per lavorare SENZA CAMPO.
 // Cambiare VERSIONE a ogni pubblicazione: i dispositivi scaricano la nuova app al primo collegamento.
-const VERSIONE = 'bmcampo-0.9.1';
+const VERSIONE = 'bmcampo-0.10.0';
 const FILE = ['./', './index.html', './manifest.json', './zxing-reader.js', './zxing_reader.wasm',
               './icona-192.png', './icona-512.png', './icona-180.png',
               './tesseract.min.js', './worker.min.js', './tesseract-core-simd-lstm.wasm.js', './tesseract-core-lstm.wasm.js', './tesseract-core-relaxedsimd-lstm.wasm.js', './eng.traineddata.gz'];
