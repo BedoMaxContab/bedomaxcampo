@@ -86,6 +86,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
 .scan video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .scan .guida{position:absolute;left:7%;right:7%;top:30%;height:30%;border:3px solid #fff;border-radius:14px;box-shadow:0 0 0 2000px rgba(0,0,0,.45)}
 .scan .guida.ok{border-color:#4ade80}
+.scan .guida.qr{left:50%;right:auto;top:50%;height:auto;width:min(70vw,70vh);aspect-ratio:1;transform:translate(-50%,-50%)}
 .scan .guida.disp{top:33%;height:19%;left:5%;right:5%}
 .fotodisp{width:100%;border-radius:12px;border:3px solid var(--line);display:block}
 .scan .msg{position:absolute;left:16px;right:16px;top:calc(env(safe-area-inset-top,0px) + 16px);color:#fff;font-weight:700;font-size:18px;text-align:center;text-shadow:0 1px 3px #000}
@@ -112,7 +113,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.7.1';
+const VERSIONE = '0.8.0';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -202,7 +203,7 @@ async function inviaFoto(c) {      // foto delle sostituzioni REGISTRATE (pronta
 /* ---------- sincronizzazione ---------- */
 let inCorso = {};
 async function sincronizza(c) {
-  if (!navigator.onLine || !cfg || (inCorso[c] && Date.now() - inCorso[c] < 90000)) return;
+  if (!navigator.onLine || !cfg || !cfg.token || (inCorso[c] && Date.now() - inCorso[c] < 90000)) return;
   inCorso[c] = Date.now();
   try {
     const p = await gh('GET', 'contents/' + percorsoCond(c) + '/piano.json', null, true);
@@ -230,16 +231,47 @@ async function sincronizza(c) {
     inviaFoto(c).catch(e => console.warn('foto', e));
   } finally { inCorso[c] = 0; aggiornaRete(); }
 }
+/* dispositivi.json (scritto da BedoMaxBanco "TABLET AUTORIZZATI"): {dispositivi:[{nome, slug, creato, scadenza, stato}]}
+   stato 'revocato' -> questo dispositivo cancella la sua chiave e si ferma. Scadenza -> avviso 15 giorni prima. */
+async function controllaDispositivo() {
+  const d = await gh('GET', 'contents/dispositivi.json', null, true);
+  if (!d.dati) return;
+  const io = (JSON.parse(d.dati).dispositivi || []).find(x => x.slug === slug(cfg.dispositivo));
+  mem.set('mioDisp', io || null);
+  if (io && io.stato === 'revocato') {
+    cfg = {dispositivo: cfg.dispositivo, token: ''}; mem.set('cfg', cfg); mem.set('revocato', io.revocato || 'sì');
+    pila = []; vai(vistaSetup);
+    throw new Error('dispositivo disattivato dall\'ufficio');
+  }
+}
+function messaggioErrore(err) {
+  const m = String(err && err.message || err);
+  if (/GitHub 401/.test(m)) return 'La chiave di accesso non è più valida (scaduta o eliminata). Chiedi all’ufficio un nuovo QR: Dispositivo → cambia → Configura con QR.';
+  if (/GitHub 403|GitHub 404/.test(m)) return 'La chiave non ha accesso all’archivio dei lavori. Chiedi all’ufficio un nuovo QR.';
+  if (/abort|Failed to fetch|Load failed|NetworkError/i.test(m)) return 'Rete assente o troppo lenta: riprovo da solo appena c’è campo.';
+  return m;
+}
+let ultimaTutto = 0;
 async function sincronizzaTutto() {
-  if (!navigator.onLine || !cfg) return;
+  if (!navigator.onLine || !cfg || !cfg.token) return;
+  ultimaTutto = Date.now();
   try {
+    await controllaDispositivo();
     const e = await gh('GET', 'contents/lavori/elenco.json', null, true);
     if (e.dati) mem.set('elenco', JSON.parse(e.dati));
-  } catch (err) { console.warn(err); }
+    mem.set('erroreSync', null); mem.set('ultimoElenco', Date.now());
+  } catch (err) {
+    console.warn(err); mem.set('erroreSync', messaggioErrore(err));
+    if (/disattivato/.test(err.message)) return;
+  }
   for (const c of Object.keys(mem.get('mio', {}))) { try { await sincronizza(c); } catch (err) { console.warn(err); } }
   if (vistaAttuale && vistaAttuale.ridisegna) vistaAttuale.ridisegna();
 }
 setInterval(() => { if (document.visibilityState === 'visible') sincronizzaTutto(); }, 90000);
+// app riaperta o tornata in primo piano: aggiorno subito l'elenco (non piu' di una volta ogni 20 s)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && Date.now() - ultimaTutto > 20000) sincronizzaTutto();
+});
 
 /* ---------- lettore etichetta (zxing-cpp WebAssembly, funziona offline) ---------- */
 let motore = null;
@@ -371,6 +403,49 @@ async function apriScanner(atteso, note) {
         }
       } catch (e) { stato.textContent = 'Errore lettore: ' + e.message; }
       setTimeout(giro, 150);
+    };
+    giro();
+  });
+}
+
+/* ---------- QR di configurazione (BedoMaxBanco > TABLET AUTORIZZATI): "BMCAMPO1|<nome>|<chiave>" ---------- */
+function leggiQrConfig(t) {
+  const p = String(t || '').split('|');
+  return p.length === 3 && p[0] === 'BMCAMPO1' && p[1].trim() && /^github_pat_\w{20,}$/.test(p[2].trim()) ? {dispositivo: p[1].trim(), token: p[2].trim()} : null;
+}
+async function scannerQr() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('questo browser non da\' accesso alla fotocamera');
+  await preparaMotore();
+  const stream = await navigator.mediaDevices.getUserMedia({audio: false, video: {facingMode: {ideal: 'environment'}, width: {ideal: 1280}, height: {ideal: 720}}});
+  const ov = document.createElement('div'); ov.className = 'scan';
+  ov.innerHTML = `<video playsinline muted autoplay></video><div class="guida qr"></div>
+    <div class="msg">Inquadra il QR che l’ufficio mostra sullo schermo di BedoMaxBanco</div>
+    <div class="sotto"><div class="stato">Cerco il QR…</div><button class="btn sec" id="annQr">Annulla</button></div>`;
+  document.body.appendChild(ov);
+  const video = ov.querySelector('video'), stato = ov.querySelector('.stato'), guida = ov.querySelector('.guida');
+  video.srcObject = stream; try { await video.play(); } catch (e) {}
+  const tela = document.createElement('canvas'), g = tela.getContext('2d', {willReadFrequently: true});
+  const opz = {tryHarder: true, formats: ['QRCode'], maxNumberOfSymbols: 1};
+  let finito = false;
+  return new Promise(risolvi => {
+    const chiudi = v => { if (finito) return; finito = true; stream.getTracks().forEach(t => t.stop()); ov.remove(); risolvi(v); };
+    ov.querySelector('#annQr').onclick = () => chiudi(null);
+    const giro = async () => {
+      if (finito) return;
+      try {
+        if (video.readyState >= 2 && video.videoWidth) {
+          const sc = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
+          tela.width = Math.round(video.videoWidth * sc); tela.height = Math.round(video.videoHeight * sc);
+          g.drawImage(video, 0, 0, tela.width, tela.height);
+          const ris = (await ZXingWASM.readBarcodes(g.getImageData(0, 0, tela.width, tela.height), opz)).filter(q => q.isValid);
+          for (const q of ris) {
+            const conf = leggiQrConfig(q.text);
+            if (conf) { guida.classList.add('ok'); if (navigator.vibrate) navigator.vibrate(60); return chiudi(conf); }
+            stato.textContent = 'Questo QR non è quello di BedoMaxBanco.';
+          }
+        }
+      } catch (e) { stato.textContent = 'Errore lettore: ' + e.message; }
+      setTimeout(giro, 200);
     };
     giro();
   });
@@ -728,33 +803,63 @@ function avviso(t) { const d = document.createElement('div'); d.className = 'avv
 
 function vistaSetup() {
   $('#titolo').textContent = 'Configura dispositivo';
+  const rev = mem.get('revocato', null);
   $('#vista').innerHTML = `
     <div class="sez">
-      <p>Questo dispositivo va configurato una volta sola. Nome e chiave restano salvati qui dentro.</p>
+      ${rev ? '<div class="esito ko"><span class="tit">Dispositivo disattivato dall’ufficio</span>La chiave è stata cancellata da questo dispositivo. I lavori già fatti restano salvati qui. Per riattivarlo serve un nuovo QR da BedoMaxBanco.</div>' : ''}
+      <div class="aiuto"><b>Come si configura:</b> in ufficio, in BedoMaxBanco, premi <b>TABLET AUTORIZZATI → Nuovo tablet</b>: sullo schermo compare un QR. Qui premi il pulsante qui sotto e inquadralo.</div>
+      <button class="btn pri" id="qr">Configura con QR</button>
+      <div id="esitoSetup"></div>
+      <details class="sez"><summary class="muted">Configura a mano (nome e chiave)</summary>
       <label class="campo" for="nome">Nome del dispositivo (es. Tablet 1, Telefono Bedo)
         <input class="txt" id="nome" autocomplete="off" value="${esc(cfg ? cfg.dispositivo : '')}"></label>
       <label class="campo" for="chiave">Chiave di accesso all'archivio (fornita dall'ufficio)
         <input class="txt" id="chiave" type="password" autocomplete="off" value="${esc(cfg ? cfg.token : '')}"></label>
-      <button class="btn pri" id="salva">Salva e prova il collegamento</button>
-      <div id="esitoSetup"></div>
+      <button class="btn sec" id="salva">Salva e prova il collegamento</button>
+      </details>
       <p class="muted">BedoMaxCampo ${VERSIONE} · archivio ${OWNER}/${REPO}</p>
     </div>`;
-  una($('#salva'), async () => {
-    const nome = $('#nome').value.trim(), tok = $('#chiave').value.trim(), out = $('#esitoSetup');
+  const prova = async (nome, tok) => {
+    const out = $('#esitoSetup');
     if (!nome || !tok) { out.innerHTML = '<div class="esito ko"><span class="tit">Scrivi il nome e la chiave.</span></div>'; return; }
     cfg = {dispositivo: nome, token: tok}; mem.set('cfg', cfg);
     out.innerHTML = '<div class="attesa">Provo il collegamento…</div>';
     try {
       const e = await gh('GET', 'contents/lavori/elenco.json', null, true);
       mem.set('elenco', e.dati ? JSON.parse(e.dati) : []);
-      out.innerHTML = '<div class="esito ok"><span class="tit">Collegato all’archivio.</span></div>';
-      setTimeout(() => { pila = []; vai(vistaLavori); }, 700);
+      mem.set('revocato', null); mem.set('erroreSync', null);
+      try { await controllaDispositivo(); } catch (err) { if (/disattivato/.test(err.message)) return; }   // ancora revocato: resta qui
+      out.innerHTML = '<div class="esito ok"><span class="tit">Collegato all’archivio come “' + esc(nome) + '”.</span></div>';
+      setTimeout(() => { pila = []; vai(vistaLavori); sincronizzaTutto(); }, 900);
     } catch (err) {
-      out.innerHTML = '<div class="esito ko"><span class="tit">Collegamento non riuscito</span>' + esc(err.message) +
-        '<br>Controlla la chiave. Se sei senza rete puoi comunque proseguire.</div><button class="btn sec" id="prosegui">Prosegui senza provare</button>';
+      out.innerHTML = '<div class="esito ko"><span class="tit">Collegamento non riuscito</span>' + esc(messaggioErrore(err)) +
+        '<br>Se sei senza rete puoi comunque proseguire.</div><button class="btn sec" id="prosegui">Prosegui senza provare</button>';
       $('#prosegui').onclick = () => { pila = []; vai(vistaLavori); };
     }
+  };
+  una($('#qr'), async () => {
+    let conf;
+    try { conf = await scannerQr(); } catch (e) { avviso('Fotocamera non disponibile: ' + e.message + '. Usa “Configura a mano”.'); return; }
+    if (!conf) return;
+    $('#nome').value = conf.dispositivo; $('#chiave').value = conf.token;
+    await prova(conf.dispositivo, conf.token);
   });
+  una($('#salva'), () => prova($('#nome').value.trim(), $('#chiave').value.trim()));
+}
+
+function bannerLavori() {
+  let h = '';
+  const err = mem.get('erroreSync', null);
+  if (err) h += '<div class="esito warn"><span class="tit">Elenco non aggiornato</span>' + esc(err) + '</div>';
+  const io = mem.get('mioDisp', null);
+  if (io && io.scadenza) {
+    const [g, m, a] = io.scadenza.split('/').map(Number), gg = Math.ceil((new Date(a, m - 1, g) - new Date()) / 86400000);
+    if (gg <= 15) h += '<div class="esito ' + (gg <= 0 ? 'ko' : 'warn') + '"><span class="tit">' + (gg <= 0 ? 'Chiave di accesso SCADUTA' : 'La chiave di accesso scade fra ' + gg + ' giorni') +
+      '</span>Scadenza ' + esc(io.scadenza) + ': chiedi all’ufficio un nuovo QR (BedoMaxBanco → TABLET AUTORIZZATI).</div>';
+  }
+  const u = mem.get('ultimoElenco', 0);
+  if (u) h += '<p class="muted">Elenco aggiornato alle ' + new Date(u).toLocaleTimeString('it-IT', {hour: '2-digit', minute: '2-digit'}) + '</p>';
+  return h;
 }
 
 function vistaLavori() {
@@ -762,6 +867,7 @@ function vistaLavori() {
   const disegna = () => {
     const el = mem.get('elenco', []);
     $('#vista').innerHTML = `
+      ${bannerLavori()}
       <div class="aiuto"><b>Come si comincia:</b> tocca il condominio dove lavori oggi. La prima volta serve la rete per scaricarlo, poi l’app funziona anche senza campo.</div>
       <div class="sez"><h2>Condomini assegnati</h2><div id="lista" class="sez"></div></div>
       <button class="btn sec pic" id="agg">Aggiorna elenco</button>
@@ -785,7 +891,11 @@ function vistaLavori() {
       };
       lista.appendChild(b);
     });
-    una($('#agg'), async () => { $('#agg').textContent = 'Aggiorno…'; await sincronizzaTutto(); disegna(); });
+    una($('#agg'), async () => {
+      $('#agg').textContent = 'Aggiorno…';
+      if (!navigator.onLine) mem.set('erroreSync', 'Il dispositivo è senza rete: l’elenco si aggiorna appena c’è campo.');
+      await sincronizzaTutto(); if (vistaAttuale && vistaAttuale.ridisegna === disegna) disegna();
+    });
     una($('#conf'), () => vai(vistaSetup));
   };
   disegna();
@@ -1116,7 +1226,7 @@ function vistaCalorifero(c, id) {
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(e => console.warn('sw', e));
 preparaMotore().catch(e => console.warn('motore', e));
 aggiornaRete();
-if (!cfg) vai(vistaSetup); else { vai(vistaLavori); sincronizzaTutto(); }
+if (!cfg || !cfg.token) vai(vistaSetup); else { vai(vistaLavori); sincronizzaTutto(); }
 </script>
 </body>
 </html>
