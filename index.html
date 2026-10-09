@@ -78,6 +78,19 @@ input.txt{font:inherit;font-size:20px;padding:12px;border-radius:12px;border:1px
 .barra i{display:block;height:100%;background:var(--ok)}
 .riga{display:flex;gap:10px;flex-wrap:wrap}
 .riga>*{flex:1;min-width:140px}
+.rad{background:var(--panel);border:1px solid var(--line);border-left:8px solid var(--warn);border-radius:14px;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.rad.ok{border-left-color:var(--ok)}
+.rad.ko{border-left-color:var(--ko)}
+.rad .tr{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700}
+.rad .tx{font-size:18px;font-weight:700;line-height:1.3}
+.rad .mis{display:flex;gap:8px;flex-wrap:wrap}
+.rad .mis span{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:4px 10px;font-family:var(--mono);font-size:16px;font-variant-numeric:tabular-nums}
+.rad .mis span i{font-style:normal;font-family:var(--sans);font-size:12px;color:var(--muted);margin-right:4px}
+.rad .es{font-weight:700}
+.rad.ok .es{color:var(--ok)}
+.rad.ko .es{color:var(--ko)}
+.griglia2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+select.txt{appearance:auto}
 .avviso{background:var(--warn-bg);color:var(--warn);border-radius:12px;padding:10px 12px;font-size:15px}
 pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;color:var(--muted);max-height:240px;overflow:auto;margin:0}
 .attesa{display:flex;align-items:center;gap:12px;font-weight:700}
@@ -116,7 +129,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.11.0';
+const VERSIONE = '0.13.0';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -166,7 +179,8 @@ window.addEventListener('online', () => { aggiornaRete(); sincronizzaTutto(); })
 window.addEventListener('offline', aggiornaRete);
 
 /* ---------- dati per condominio ---------- */
-// piano:  {condominio, indirizzo, caricato, righe:[{id, interno, n, locale, vecchia, nuova}]}
+// piano:  {condominio, indirizzo, caricato, righe:[{id, interno, n, locale, vecchia, nuova, radiatore, rad}]}
+//         rad = radiatore del rilievo {materiale|tipo|descrizione, marca, modello, h, l, p, elementi, colonne, misure} (0.13)
 // mio:    {<cond>: {sha, sporco, rec:{<id>: {stato, letto, metodo, ora, nota}}}}
 // altri:  {<cond>: {<file>: {dispositivo, rec:{...}}}}
 const piano = c => mem.get('piano:' + c, null);
@@ -255,6 +269,12 @@ function pulisciPassi(c) {
   try { Object.keys(localStorage).filter(k => k.startsWith('bmcampo:vecchio:' + c + ':')).forEach(k => localStorage.removeItem(k)); } catch (e) {}
   fotoDB.keys().then(kk => kk.filter(k => String(k).startsWith(c + '|')).forEach(k => fotoDB.del(k))).catch(() => {});
 }
+// 0.12.0 (BEDO 06/10): il banco assegna ogni condominio a uno o piu' tablet; qui si vedono SOLO quelli assegnati a questo
+// tablet (elenco.json, campo "tablet" = slug dei tablet). Senza il campo (invii vecchi) lo vedono tutti.
+function mieiLavori() {
+  const io = cfg && cfg.dispositivo ? slug(cfg.dispositivo) : '';
+  return (mem.get('elenco', []) || []).filter(l => !Array.isArray(l.tablet) || l.tablet.includes(io));
+}
 function dimentica(c) {
   const m = mem.get('mio', {}); delete m[c]; mem.set('mio', m);
   try { ['piano:', 'altri:', 'ultimaSync:'].forEach(p => localStorage.removeItem('bmcampo:' + p + c)); } catch (e) {}
@@ -289,6 +309,9 @@ async function sincronizzaTutto() {
     const e = await gh('GET', 'contents/lavori/elenco.json', null, true);
     if (e.dati) mem.set('elenco', JSON.parse(e.dati));
     mem.set('erroreSync', null); mem.set('ultimoElenco', Date.now());
+    // condomini non piu' assegnati a questo tablet: via dal dispositivo (prima pero' si invia quello che c'e' da inviare)
+    const miei = new Set(mieiLavori().map(l => l.condominio)), mm = mem.get('mio', {});
+    for (const c of Object.keys(mm)) if (!miei.has(c) && !mm[c].sporco) dimentica(c);
   } catch (err) {
     console.warn(err); mem.set('erroreSync', messaggioErrore(err));
     if (/disattivato/.test(err.message)) return;
@@ -584,16 +607,16 @@ function bannerLavori() {
 function vistaLavori() {
   $('#titolo').textContent = 'BedoMaxCampo';
   const disegna = () => {
-    const el = mem.get('elenco', []);
+    const el = mieiLavori();
     $('#vista').innerHTML = `
       ${bannerLavori()}
       <div class="aiuto"><b>Come si comincia:</b> tocca il condominio dove lavori oggi. La prima volta serve la rete per scaricarlo, poi l’app funziona anche senza campo.</div>
-      <div class="sez"><h2>Condomini assegnati</h2><div id="lista" class="sez"></div></div>
+      <div class="sez"><h2>Condomini assegnati a ${esc(cfg.dispositivo)}</h2><div id="lista" class="sez"></div></div>
       <button class="btn sec pic" id="agg">Aggiorna elenco</button>
       <button class="btn sec pic" id="conf">Dispositivo: ${esc(cfg.dispositivo)} · cambia</button>
       <p class="muted">BedoMaxCampo ${VERSIONE}</p>`;
     const lista = $('#lista');
-    if (!el.length) lista.innerHTML = '<p class="muted">Nessun condominio. Quando l’ufficio carica un condominio da BedoMaxBanco compare qui (serve la rete la prima volta).</p>';
+    if (!el.length) lista.innerHTML = '<p class="muted">Nessun condominio assegnato a questo tablet. Quando l’ufficio, da BedoMaxBanco, invia un condominio e lo assegna a “' + esc(cfg.dispositivo) + '”, compare qui (serve la rete la prima volta).</p>';
     el.forEach(l => {
       const p = piano(l.condominio); const tot = p ? p.righe.length : l.ripartitori;
       const fatti = p ? p.righe.filter(r => statoCal(l.condominio, r.id)).length : 0;
@@ -674,6 +697,43 @@ function vistaInterno(c, interno) {
   return {ridisegna: disegna};
 }
 
+/* ---------- radiatore (0.13, richiesta BEDO 09/10/2026) ----------
+   Il tecnico controlla che il radiatore installato sia quello del rilievo. "Radiatore diverso" = scrive com'e'
+   davvero: l'ufficio ricalcola il KQ e riprogramma il ripartitore. La verifica sta nel record del calorifero
+   (rad_ok, rad_reale, rad_ora); se il calorifero non e' ancora registrato aspetta in memoria e parte con la posa. */
+const TIPI_RAD = ['Alluminio', 'Ghisa', 'Acciaio a piastra', 'Acciaio tubolare', 'Scaldasalviette', 'Termoarredo', 'Altro'];
+function radVerifica(c, id) {
+  const rec = mieiRec(c)[id];
+  if (rec && rec.stato !== 'annullato' && rec.rad_ok !== undefined) return {rad_ok: rec.rad_ok, rad_reale: rec.rad_reale, rad_ora: rec.rad_ora};
+  return mem.get('rad:' + c + ':' + id, null);
+}
+function salvaRadVerifica(c, id, v) {
+  mem.set('rad:' + c + ':' + id, v);
+  const m = mem.get('mio', {}); const rec = m[c] && m[c].rec[id];
+  if (rec && rec.stato !== 'annullato') {               // calorifero gia' registrato: la verifica parte subito
+    Object.assign(rec, v); if (v.rad_ok) delete rec.rad_reale;
+    m[c].sporco = true; mem.set('mio', m); aggiornaRete(); sincronizza(c).catch(() => {});
+  }
+}
+function radMisure(rad) {
+  const out = [];
+  for (const [k, t] of [['h', 'altezza'], ['l', 'larghezza'], ['p', 'profondità']]) if (rad[k]) out.push(`<span><i>${t}</i>${esc(rad[k])} mm</span>`);
+  if (!out.length && rad.misure) out.push(`<span><i>misure</i>${esc(rad.misure)}</span>`);
+  if (rad.elementi && String(rad.elementi) !== '1') out.push(`<span><i>elementi</i>${esc(rad.elementi)}</span>`);
+  if (rad.colonne) out.push(`<span><i>colonne</i>${esc(rad.colonne)}</span>`);
+  return out.join('');
+}
+function radTipo(rad) {
+  const t = rad.materiale || rad.tipo || rad.descrizione || '';
+  const extra = [rad.marca, rad.modello].filter(x => x && !t.toLowerCase().includes(String(x).toLowerCase())).join(' ');
+  return (t + (extra ? ' ' + extra : '')).trim();
+}
+function testoTrovato(rr) {
+  if (!rr) return '';
+  const dim = [['h', 'H'], ['l', 'L'], ['p', 'P']].filter(([k]) => rr[k]).map(([k, t]) => t + ' ' + rr[k]).join(' x ');
+  return [rr.tipo, dim ? dim + ' mm' : '', rr.elementi ? rr.elementi + ' elementi' : '', rr.note].filter(Boolean).join(' · ');
+}
+
 function vistaCalorifero(c, id) {
   const p = piano(c), r = p.righe.find(x => x.id === id);
   $('#titolo').textContent = 'Int. ' + r.interno + ' · ' + r.locale;
@@ -685,6 +745,7 @@ function vistaCalorifero(c, id) {
         <span>Togli il vecchio</span><b>${esc(r.vecchia)}</b>
         <span>Monta il nuovo</span><b>${esc(r.nuova)}</b>
       </div>
+      ${radHtml()}
       ${s ? `<div class="esito ${s.r.stato === 'problema' || s.doppio ? 'ko' : 'ok'}"><span class="tit">${s.r.stato === 'problema' ? 'Segnato con PROBLEMA' : 'Già sostituito'}${s.mio ? '' : ' da ' + esc(s.r.da)}</span>
         letto ${esc(s.r.letto || '-')} · ${s.r.metodo === 'manuale' ? 'inserito a mano' : s.r.metodo && s.r.metodo.startsWith('numero') ? 'dal numero stampato' + (s.r.metodo.includes('conf') ? ' (confermato)' : '') : 'letto dalla fotocamera'} · ${new Date(s.r.ora).toLocaleString('it-IT')}
         ${s.r.vecchio_ok === false ? '<br>⚠ vecchio non verificato: ' + esc(s.r.vecchio_nota || '') : s.r.vecchio_ok ? '<br>vecchio verificato ' + esc(s.r.vecchio_letto || '') : ''}
@@ -702,6 +763,7 @@ function vistaCalorifero(c, id) {
       <button class="btn sec" id="mano" style="flex-direction:column;gap:2px;padding-block:8px">⌨ Scrivi la matricola a mano<small style="font-weight:400;font-size:14px">fotocamera guasta o etichetta illeggibile</small></button>
       ${s && s.mio ? '<button class="btn sec pic" id="annulla">Annulla questa sostituzione</button>' : ''}`}
       ${!s && p1() ? '<button class="btn sec pic" id="rifaiV">Rifai il 1° passo (vecchio)</button>' : ''}`;
+    collegaRad();
     if (s) collegaDopo();
     if ($('#inqV')) { passo1Comandi(); return; }
     if ($('#rifaiV')) $('#rifaiV').onclick = () => { mem.set(kP1, null); disegna(); };
@@ -755,6 +817,57 @@ function vistaCalorifero(c, id) {
       $('#no').onclick = () => disegna(); una($('#si'), () => { salvaRec(c, id, {stato: 'annullato', ora: new Date().toISOString()}); disegna(); });
     };
   };
+  const radRil = r.rad || {}, haRad = !!(r.radiatore || Object.keys(radRil).length);
+  const altroDisp = () => { const s = statoCal(c, id); return s && !s.mio; };
+  function radHtml() {
+    if (!haRad) return '<p class="muted">Radiatore: nessun dato nel rilievo.</p>';
+    const v = radVerifica(c, id), tipo = radTipo(radRil) || (radRil.misure ? '' : r.radiatore);
+    const cls = !v ? '' : v.rad_ok ? 'ok' : 'ko';
+    let stato;
+    if (!v) stato = altroDisp() ? '' : `<div class="riga"><button class="btn sec pic" id="radNo">✗ Radiatore diverso</button><button class="btn pri pic" id="radSi">✓ È questo</button></div>`;
+    else if (v.rad_ok) stato = `<span class="es">✓ Radiatore verificato: è quello del rilievo</span><button class="btn sec pic" id="radCambia">Cambia</button>`;
+    else stato = `<span class="es">✗ RADIATORE DIVERSO</span><span>Trovato: <b>${esc(testoTrovato(v.rad_reale) || '-')}</b></span>
+      <span class="muted">L’ufficio ricalcolerà il KQ e riprogrammerà il ripartitore.</span><button class="btn sec pic" id="radCambia">Modifica</button>`;
+    return `<div class="rad ${cls}"><span class="tr">Radiatore secondo il rilievo — controlla che sia questo</span>
+      ${tipo ? `<span class="tx">${esc(tipo)}</span>` : ''}<div class="mis">${radMisure(radRil)}</div>${stato}<div id="esitoRad"></div></div>`;
+  }
+  function collegaRad() {
+    if ($('#radSi')) una($('#radSi'), () => { salvaRadVerifica(c, id, {rad_ok: true, rad_ora: new Date().toISOString()}); disegna(); });
+    if ($('#radNo')) $('#radNo').onclick = () => formRad();
+    if ($('#radCambia')) $('#radCambia').onclick = () => { const v = radVerifica(c, id); if (v && !v.rad_ok) formRad(v.rad_reale); else {
+      mem.set('rad:' + c + ':' + id, null); const m = mem.get('mio', {}); const rec = m[c] && m[c].rec[id];
+      if (rec) { delete rec.rad_ok; delete rec.rad_reale; delete rec.rad_ora; m[c].sporco = true; mem.set('mio', m); sincronizza(c).catch(() => {}); }
+      disegna(); } };
+  }
+  function formRad(prima) {
+    const v = prima || {};
+    $('#esitoRad').innerHTML = `<div class="sez"><p><b>Scrivi com’è il radiatore installato</b> (quello che riesci a misurare).</p>
+      <label class="campo" for="rTipo">Tipo<select class="txt" id="rTipo"><option value="">— scegli —</option>${TIPI_RAD.map(t => `<option${v.tipo === t ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+      <div class="griglia2">
+        <label class="campo" for="rH">Altezza (mm)<input class="txt" id="rH" inputmode="numeric" maxlength="4" placeholder="${esc(radRil.h || '')}" value="${esc(v.h || '')}"></label>
+        <label class="campo" for="rL">Larghezza (mm)<input class="txt" id="rL" inputmode="numeric" maxlength="4" placeholder="${esc(radRil.l || '')}" value="${esc(v.l || '')}"></label>
+        <label class="campo" for="rP">Profondità (mm)<input class="txt" id="rP" inputmode="numeric" maxlength="4" placeholder="${esc(radRil.p || '')}" value="${esc(v.p || '')}"></label>
+        <label class="campo" for="rE">N. elementi<input class="txt" id="rE" inputmode="numeric" maxlength="3" placeholder="${esc(radRil.elementi || '')}" value="${esc(v.elementi || '')}"></label>
+      </div>
+      <label class="campo" for="rN">Note (marca, modello, colonne…)<input class="txt" id="rN" maxlength="120" value="${esc(v.note || '')}"></label>
+      <div class="riga"><button class="btn sec pic" id="rAnn">Annulla</button><button class="btn pri pic" id="rOk">Salva: radiatore diverso</button></div>
+      <p class="muted" id="rMsg"></p></div>`;
+    $('#esitoRad').scrollIntoView({block: 'start', behavior: 'smooth'});
+    $('#rAnn').onclick = () => { $('#esitoRad').innerHTML = ''; };
+    una($('#rOk'), () => {
+      const n = k => $(k).value.replace(/\D/g, '');
+      const rr = {tipo: $('#rTipo').value, h: n('#rH'), l: n('#rL'), p: n('#rP'), elementi: n('#rE'), note: $('#rN').value.trim()};
+      Object.keys(rr).forEach(k => { if (!rr[k]) delete rr[k]; });
+      if (!Object.keys(rr).length) { $('#rMsg').textContent = 'Scrivi almeno il tipo o una misura.'; return; }
+      salvaRadVerifica(c, id, {rad_ok: false, rad_reale: rr, rad_ora: new Date().toISOString()});
+      if (navigator.vibrate) navigator.vibrate(80);
+      disegna();
+    });
+  }
+  function radDati() {      // da unire al record quando si registra la posa
+    const v = mem.get('rad:' + c + ':' + id, null);
+    return v ? Object.assign({}, v) : {};
+  }
   function dopoHtml() {
     const nx = prossimoDaFare(c, id);
     return (nx ? `<button class="btn pri" id="avanti" style="flex-direction:column;gap:2px;padding-block:8px">Avanti ➜ prossimo calorifero<small style="font-weight:400;font-size:15px">int. ${esc(nx.interno)} · ${nx.n}. ${esc(nx.locale)}</small></button>`
@@ -834,7 +947,7 @@ function vistaCalorifero(c, id) {
     }
     const m = matr.includes(r.nuova) ? r.nuova : matr[0];
     if (m === r.nuova) {
-      salvaRec(c, id, Object.assign({stato: 'posato', letto: m, metodo, ora: new Date().toISOString(), nota: ''}, datiVecchio()));
+      salvaRec(c, id, Object.assign({stato: 'posato', letto: m, metodo, ora: new Date().toISOString(), nota: ''}, datiVecchio(), radDati()));
       fotoPronta(); mem.set(kP1, null);
       if (navigator.vibrate) navigator.vibrate(80);
       disegna(`<div class="esito ok"><span class="tit">Giusto ✓ registrato</span><b class="big">${esc(m)}</b><span>è il ripartitore previsto per questo calorifero.</span></div>`);
@@ -851,7 +964,7 @@ function vistaCalorifero(c, id) {
     out.innerHTML = `<div class="esito ko"><span class="tit">SBAGLIATO ✗</span><b class="big">${esc(m)}</b><span>${msg}</span>
       <div class="riga"><button class="btn sec pic" id="forza">Montato comunque: segna PROBLEMA</button></div></div>`;
     una($('#forza'), () => {
-      salvaRec(c, id, Object.assign({stato: 'problema', letto: m, metodo, ora: new Date().toISOString(), nota: 'montato ' + m + ' invece di ' + r.nuova}, datiVecchio()));
+      salvaRec(c, id, Object.assign({stato: 'problema', letto: m, metodo, ora: new Date().toISOString(), nota: 'montato ' + m + ' invece di ' + r.nuova}, datiVecchio(), radDati()));
       fotoPronta(); mem.set(kP1, null);
       disegna('<div class="esito warn"><span class="tit">Segnato con PROBLEMA</span>L’ufficio vedrà la differenza.</div>');
     });
