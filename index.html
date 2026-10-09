@@ -129,7 +129,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.13.0';
+const VERSIONE = '0.13.1';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -611,12 +611,17 @@ function vistaLavori() {
     $('#vista').innerHTML = `
       ${bannerLavori()}
       <div class="aiuto"><b>Come si comincia:</b> tocca il condominio dove lavori oggi. La prima volta serve la rete per scaricarlo, poi l’app funziona anche senza campo.</div>
-      <div class="sez"><h2>Condomini assegnati a ${esc(cfg.dispositivo)}</h2><div id="lista" class="sez"></div></div>
+      <div class="sez"><h2>Condomini assegnati a ${esc(cfg.dispositivo)}</h2>
+        ${el.length ? `<label class="campo" for="cerca">Condominio (scrivi o scegli dalla tendina)
+          <input class="txt" id="cerca" list="elencoCond" autocomplete="off" placeholder="es. Lamarmora" value="${esc(mem.get('cercaCond', ''))}">
+          <datalist id="elencoCond">${el.map(l => `<option value="${esc(l.condominio)}">${esc(l.indirizzo || '')}</option>`).join('')}</datalist></label>` : ''}
+        <div id="lista" class="sez"></div></div>
       <button class="btn sec pic" id="agg">Aggiorna elenco</button>
       <button class="btn sec pic" id="conf">Dispositivo: ${esc(cfg.dispositivo)} · cambia</button>
       <p class="muted">BedoMaxCampo ${VERSIONE}</p>`;
     const lista = $('#lista');
     if (!el.length) lista.innerHTML = '<p class="muted">Nessun condominio assegnato a questo tablet. Quando l’ufficio, da BedoMaxBanco, invia un condominio e lo assegna a “' + esc(cfg.dispositivo) + '”, compare qui (serve la rete la prima volta).</p>';
+    const voci = [];
     el.forEach(l => {
       const p = piano(l.condominio); const tot = p ? p.righe.length : l.ripartitori;
       const fatti = p ? p.righe.filter(r => statoCal(l.condominio, r.id)).length : 0;
@@ -631,8 +636,26 @@ function vistaLavori() {
         }
         if (piano(l.condominio)) vai(vistaCondominio, l.condominio); else avviso('Lavoro non ancora scaricato: serve la rete.');
       };
-      lista.appendChild(b);
+      lista.appendChild(b); voci.push([l, b]);
     });
+    // 0.13.1 (BEDO 09/10): tendina scrivibile del condominio: filtra l'elenco mentre si scrive; nome esatto = si apre
+    const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const filtra = () => {
+      const q = norm($('#cerca').value).trim(); mem.set('cercaCond', $('#cerca').value);
+      let n = 0;
+      voci.forEach(([l, b]) => { const ok = !q || q.split(/\s+/).every(w => norm(l.condominio + ' ' + (l.indirizzo || '')).includes(w)); b.style.display = ok ? '' : 'none'; n += ok; });
+      let v = $('#nessuno'); if (!n && !v) { v = document.createElement('p'); v.id = 'nessuno'; v.className = 'muted'; lista.appendChild(v); }
+      if (v) { v.textContent = n ? '' : 'Nessun condominio con “' + $('#cerca').value + '”.'; v.style.display = n ? 'none' : ''; }
+      return voci.filter(([, b]) => b.style.display !== 'none');
+    };
+    if ($('#cerca')) {
+      $('#cerca').oninput = () => {
+        const vis = filtra(), esatto = voci.find(([l]) => norm(l.condominio) === norm($('#cerca').value).trim());
+        if (esatto && vis.length === 1) esatto[1].click();          // scelto dalla tendina: si apre subito
+      };
+      $('#cerca').onkeydown = e => { if (e.key === 'Enter') { const vis = filtra(); if (vis.length === 1) vis[0][1].click(); } };
+      filtra();
+    }
     una($('#agg'), async () => {
       $('#agg').textContent = 'Aggiorno…';
       if (!navigator.onLine) mem.set('erroreSync', 'Il dispositivo è senza rete: l’elenco si aggiorna appena c’è campo.');
