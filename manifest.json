@@ -1,7 +1,7 @@
 {
   "name": "BedoMaxTecnico",
   "short_name": "BMTecnico",
-  "description": "Sostituzione ripartitori - app del tecnico - Montanari Sicurcalor",
+  "description": "Sostituzione ripartitori - app del tecnico (BedoMaxContab)",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

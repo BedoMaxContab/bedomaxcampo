@@ -124,13 +124,16 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
 <script>
 'use strict';
 /* =====================================================================
-   BedoMaxTecnico 0.1 - Montanari Sicurcalor
+   BedoMaxTecnico - app del tecnico per la sostituzione dei ripartitori (BedoMaxContab)
    - lavori caricati dall'ufficio (BedoMaxSede) nell'archivio GitHub privato "campo-dati"
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.15.0';
-const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
+const VERSIONE = '0.16.0';
+// 0.16.0 (12/10/2026): l'ARCHIVIO puo' essere di un'altra ditta che usa BedoMaxSede (es. Leucari): il suo account
+// GitHub arriva col QR (4o campo) o si scrive a mano; senza, resta l'archivio di sempre (tablet gia' configurati: niente cambia)
+const OWNER_DEF = 'BedoMaxContab', REPO = 'campo-dati';
+const owner = () => (cfg && cfg.owner) || OWNER_DEF;
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -149,7 +152,7 @@ const mem = {
   get(k, def) { try { const v = localStorage.getItem('bmcampo:' + k); return v == null ? def : JSON.parse(v); } catch (e) { return def; } },
   set(k, v) { try { localStorage.setItem('bmcampo:' + k, JSON.stringify(v)); return true; } catch (e) { avviso('Memoria del dispositivo piena o bloccata: ' + e.message); return false; } }
 };
-let cfg = mem.get('cfg', null);           // {dispositivo, token}
+let cfg = mem.get('cfg', null);           // {dispositivo, token, owner?}
 const slug = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'disp';
 const mioFile = () => 'disp-' + slug(cfg.dispositivo) + '.json';
 const percorsoCond = c => 'lavori/' + encodeURIComponent(c);
@@ -157,7 +160,7 @@ const percorsoCond = c => 'lavori/' + encodeURIComponent(c);
 /* ---------- GitHub ---------- */
 async function gh(metodo, percorso, corpo, raw) {
   const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 45000);    // niente attese infinite
-  const r = await fetch('https://api.github.com/repos/' + OWNER + '/' + REPO + '/' + percorso, {
+  const r = await fetch('https://api.github.com/repos/' + owner() + '/' + REPO + '/' + percorso, {
     method: metodo, cache: 'no-store', signal: ctl.signal,
     headers: {'Authorization': 'Bearer ' + cfg.token, 'Accept': raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json',
               'X-GitHub-Api-Version': '2022-11-28'},
@@ -288,7 +291,7 @@ async function controllaDispositivo() {
   const io = (JSON.parse(d.dati).dispositivi || []).find(x => x.slug === slug(cfg.dispositivo));
   mem.set('mioDisp', io || null);
   if (io && io.stato === 'revocato') {
-    cfg = {dispositivo: cfg.dispositivo, token: ''}; mem.set('cfg', cfg); mem.set('revocato', io.revocato || 'sì');
+    cfg = {dispositivo: cfg.dispositivo, token: '', owner: cfg.owner}; mem.set('cfg', cfg); mem.set('revocato', io.revocato || 'sì');
     pila = []; vai(vistaSetup);
     throw new Error('dispositivo disattivato dall\'ufficio');
   }
@@ -460,10 +463,14 @@ async function apriScanner(atteso, note) {
   });
 }
 
-/* ---------- QR di configurazione (BedoMaxSede > TABLET AUTORIZZATI): "BMCAMPO1|<nome>|<chiave>" ---------- */
+/* ---------- QR di configurazione (BedoMaxSede > TABLET AUTORIZZATI): "BMCAMPO1|<nome>|<chiave>[|<account archivio>]" ---------- */
+const ownerValido = o => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(o);
 function leggiQrConfig(t) {
   const p = String(t || '').split('|');
-  return p.length === 3 && p[0] === 'BMCAMPO1' && p[1].trim() && /^github_pat_\w{20,}$/.test(p[2].trim()) ? {dispositivo: p[1].trim(), token: p[2].trim()} : null;
+  if ((p.length !== 3 && p.length !== 4) || p[0] !== 'BMCAMPO1' || !p[1].trim() || !/^github_pat_\w{20,}$/.test(p[2].trim())) return null;
+  const own = p.length === 4 ? p[3].trim() : '';
+  if (own && !ownerValido(own)) return null;
+  return {dispositivo: p[1].trim(), token: p[2].trim(), owner: own};
 }
 async function scannerQr() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('questo browser non da\' accesso alla fotocamera');
@@ -557,14 +564,20 @@ function vistaSetup() {
         <input class="txt" id="nome" autocomplete="off" value="${esc(cfg ? cfg.dispositivo : '')}"></label>
       <label class="campo" for="chiave">Chiave di accesso all'archivio (fornita dall'ufficio)
         <input class="txt" id="chiave" type="password" autocomplete="off" value="${esc(cfg ? cfg.token : '')}"></label>
+      <label class="campo" for="own">Account dell’archivio (solo se l’ufficio lo indica; vuoto = ${OWNER_DEF})
+        <input class="txt" id="own" autocomplete="off" autocapitalize="off" value="${esc(cfg && cfg.owner ? cfg.owner : '')}"></label>
       <button class="btn sec" id="salva">Salva e prova il collegamento</button>
       </details>
-      <p class="muted">BedoMaxTecnico ${VERSIONE} · archivio ${OWNER}/${REPO}</p>
+      <p class="muted">BedoMaxTecnico ${VERSIONE} · archivio ${owner()}/${REPO}</p>
     </div>`;
-  const prova = async (nome, tok) => {
+  const prova = async (nome, tok, own) => {
     const out = $('#esitoSetup');
     if (!nome || !tok) { out.innerHTML = '<div class="esito ko"><span class="tit">Scrivi il nome e la chiave.</span></div>'; return; }
-    cfg = {dispositivo: nome, token: tok}; mem.set('cfg', cfg);
+    own = (own || '').trim();
+    if (own && !ownerValido(own)) { out.innerHTML = '<div class="esito ko"><span class="tit">Account dell’archivio non valido.</span></div>'; return; }
+    if (own === OWNER_DEF) own = '';
+    if ((own || OWNER_DEF) !== owner()) { mem.set('elenco', []); }       // archivio di un'altra ditta: via l'elenco vecchio
+    cfg = own ? {dispositivo: nome, token: tok, owner: own} : {dispositivo: nome, token: tok}; mem.set('cfg', cfg);
     out.innerHTML = '<div class="attesa">Provo il collegamento…</div>';
     try {
       const e = await gh('GET', 'contents/lavori/elenco.json', null, true);
@@ -583,10 +596,10 @@ function vistaSetup() {
     let conf;
     try { conf = await scannerQr(); } catch (e) { avviso('Fotocamera non disponibile: ' + e.message + '. Usa “Configura a mano”.'); return; }
     if (!conf) return;
-    $('#nome').value = conf.dispositivo; $('#chiave').value = conf.token;
-    await prova(conf.dispositivo, conf.token);
+    $('#nome').value = conf.dispositivo; $('#chiave').value = conf.token; $('#own').value = conf.owner || '';
+    await prova(conf.dispositivo, conf.token, conf.owner);
   });
-  una($('#salva'), () => prova($('#nome').value.trim(), $('#chiave').value.trim()));
+  una($('#salva'), () => prova($('#nome').value.trim(), $('#chiave').value.trim(), $('#own').value.trim()));
 }
 
 function bannerLavori() {
