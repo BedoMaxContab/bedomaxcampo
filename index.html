@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>BedoMaxCampo</title>
+<title>BedoMaxTecnico</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#9A3412">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="BMCampo">
+<meta name="apple-mobile-web-app-title" content="BMTecnico">
 <link rel="apple-touch-icon" href="icona-180.png">
 <style>
-/* BedoMaxCampo: una colonna, pulsanti grandi da usare con i guanti; testata fissa con stato rete */
+/* BedoMaxTecnico: una colonna, pulsanti grandi da usare con i guanti; testata fissa con stato rete */
 :root{
   --bg:#f6f3ef; --fg:#1d1a17; --muted:#6b625a; --panel:#ffffff; --line:#e2dbd3;
   --brand:#9A3412; --brand2:#C2410C; --brand-fg:#ffffff;
@@ -113,7 +113,7 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
 <body>
 <header>
   <button class="ind" id="indietro" aria-label="Indietro" hidden>&#8249; Indietro</button>
-  <h1 id="titolo">BedoMaxCampo</h1>
+  <h1 id="titolo">BedoMaxTecnico</h1>
   <button class="ind" id="zoom" aria-label="Grandezza del testo" title="Grandezza del testo">Aa</button>
   <span class="rete" id="rete">…</span>
 </header>
@@ -124,12 +124,12 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
 <script>
 'use strict';
 /* =====================================================================
-   BedoMaxCampo 0.1 - Montanari Sicurcalor
-   - lavori caricati dall'ufficio (BedoMaxBanco) nell'archivio GitHub privato "campo-dati"
+   BedoMaxTecnico 0.1 - Montanari Sicurcalor
+   - lavori caricati dall'ufficio (BedoMaxSede) nell'archivio GitHub privato "campo-dati"
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.13.0';
+const VERSIONE = '0.14.0';
 const OWNER = 'BedoMaxContab', REPO = 'campo-dati';
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -280,7 +280,7 @@ function dimentica(c) {
   try { ['piano:', 'altri:', 'ultimaSync:'].forEach(p => localStorage.removeItem('bmcampo:' + p + c)); } catch (e) {}
   pulisciPassi(c);
 }
-/* dispositivi.json (scritto da BedoMaxBanco "TABLET AUTORIZZATI"): {dispositivi:[{nome, slug, creato, scadenza, stato}]}
+/* dispositivi.json (scritto da BedoMaxSede "TABLET AUTORIZZATI"): {dispositivi:[{nome, slug, creato, scadenza, stato}]}
    stato 'revocato' -> questo dispositivo cancella la sua chiave e si ferma. Scadenza -> avviso 15 giorni prima. */
 async function controllaDispositivo() {
   const d = await gh('GET', 'contents/dispositivi.json', null, true);
@@ -460,7 +460,7 @@ async function apriScanner(atteso, note) {
   });
 }
 
-/* ---------- QR di configurazione (BedoMaxBanco > TABLET AUTORIZZATI): "BMCAMPO1|<nome>|<chiave>" ---------- */
+/* ---------- QR di configurazione (BedoMaxSede > TABLET AUTORIZZATI): "BMCAMPO1|<nome>|<chiave>" ---------- */
 function leggiQrConfig(t) {
   const p = String(t || '').split('|');
   return p.length === 3 && p[0] === 'BMCAMPO1' && p[1].trim() && /^github_pat_\w{20,}$/.test(p[2].trim()) ? {dispositivo: p[1].trim(), token: p[2].trim()} : null;
@@ -471,7 +471,7 @@ async function scannerQr() {
   const stream = await navigator.mediaDevices.getUserMedia({audio: false, video: {facingMode: {ideal: 'environment'}, width: {ideal: 1280}, height: {ideal: 720}}});
   const ov = document.createElement('div'); ov.className = 'scan';
   ov.innerHTML = `<video playsinline muted autoplay></video><div class="guida qr"></div>
-    <div class="msg">Inquadra il QR che l’ufficio mostra sullo schermo di BedoMaxBanco</div>
+    <div class="msg">Inquadra il QR che l’ufficio mostra sullo schermo di BedoMaxSede</div>
     <div class="sotto"><div class="stato">Cerco il QR…</div><button class="btn sec" id="annQr">Annulla</button></div>`;
   document.body.appendChild(ov);
   const video = ov.querySelector('video'), stato = ov.querySelector('.stato'), guida = ov.querySelector('.guida');
@@ -493,7 +493,7 @@ async function scannerQr() {
           for (const q of ris) {
             const conf = leggiQrConfig(q.text);
             if (conf) { guida.classList.add('ok'); if (navigator.vibrate) navigator.vibrate(60); return chiudi(conf); }
-            stato.textContent = 'Questo QR non è quello di BedoMaxBanco.';
+            stato.textContent = 'Questo QR non è quello di BedoMaxSede.';
           }
         }
       } catch (e) { stato.textContent = 'Errore lettore: ' + e.message; }
@@ -548,8 +548,8 @@ function vistaSetup() {
   const rev = mem.get('revocato', null);
   $('#vista').innerHTML = `
     <div class="sez">
-      ${rev ? '<div class="esito ko"><span class="tit">Dispositivo disattivato dall’ufficio</span>La chiave è stata cancellata da questo dispositivo. I lavori già fatti restano salvati qui. Per riattivarlo serve un nuovo QR da BedoMaxBanco.</div>' : ''}
-      <div class="aiuto"><b>Come si configura:</b> in ufficio, in BedoMaxBanco, premi <b>TABLET AUTORIZZATI → Nuovo tablet</b>: sullo schermo compare un QR. Qui premi il pulsante qui sotto e inquadralo.</div>
+      ${rev ? '<div class="esito ko"><span class="tit">Dispositivo disattivato dall’ufficio</span>La chiave è stata cancellata da questo dispositivo. I lavori già fatti restano salvati qui. Per riattivarlo serve un nuovo QR da BedoMaxSede.</div>' : ''}
+      <div class="aiuto"><b>Come si configura:</b> in ufficio, in BedoMaxSede, premi <b>TABLET AUTORIZZATI → Nuovo tablet</b>: sullo schermo compare un QR. Qui premi il pulsante qui sotto e inquadralo.</div>
       <button class="btn pri" id="qr">Configura con QR</button>
       <div id="esitoSetup"></div>
       <details class="sez"><summary class="muted">Configura a mano (nome e chiave)</summary>
@@ -559,7 +559,7 @@ function vistaSetup() {
         <input class="txt" id="chiave" type="password" autocomplete="off" value="${esc(cfg ? cfg.token : '')}"></label>
       <button class="btn sec" id="salva">Salva e prova il collegamento</button>
       </details>
-      <p class="muted">BedoMaxCampo ${VERSIONE} · archivio ${OWNER}/${REPO}</p>
+      <p class="muted">BedoMaxTecnico ${VERSIONE} · archivio ${OWNER}/${REPO}</p>
     </div>`;
   const prova = async (nome, tok) => {
     const out = $('#esitoSetup');
@@ -597,7 +597,7 @@ function bannerLavori() {
   if (io && io.scadenza) {
     const [g, m, a] = io.scadenza.split('/').map(Number), gg = Math.ceil((new Date(a, m - 1, g) - new Date()) / 86400000);
     if (gg <= 15) h += '<div class="esito ' + (gg <= 0 ? 'ko' : 'warn') + '"><span class="tit">' + (gg <= 0 ? 'Chiave di accesso SCADUTA' : 'La chiave di accesso scade fra ' + gg + ' giorni') +
-      '</span>Scadenza ' + esc(io.scadenza) + ': chiedi all’ufficio un nuovo QR (BedoMaxBanco → TABLET AUTORIZZATI).</div>';
+      '</span>Scadenza ' + esc(io.scadenza) + ': chiedi all’ufficio un nuovo QR (BedoMaxSede → TABLET AUTORIZZATI).</div>';
   }
   const u = mem.get('ultimoElenco', 0);
   if (u) h += '<p class="muted">Elenco aggiornato alle ' + new Date(u).toLocaleTimeString('it-IT', {hour: '2-digit', minute: '2-digit'}) + '</p>';
@@ -605,7 +605,7 @@ function bannerLavori() {
 }
 
 function vistaLavori() {
-  $('#titolo').textContent = 'BedoMaxCampo';
+  $('#titolo').textContent = 'BedoMaxTecnico';
   const disegna = () => {
     const el = mieiLavori();
     $('#vista').innerHTML = `
@@ -614,9 +614,9 @@ function vistaLavori() {
       <div class="sez"><h2>Condomini assegnati a ${esc(cfg.dispositivo)}</h2><div id="lista" class="sez"></div></div>
       <button class="btn sec pic" id="agg">Aggiorna elenco</button>
       <button class="btn sec pic" id="conf">Dispositivo: ${esc(cfg.dispositivo)} · cambia</button>
-      <p class="muted">BedoMaxCampo ${VERSIONE}</p>`;
+      <p class="muted">BedoMaxTecnico ${VERSIONE}</p>`;
     const lista = $('#lista');
-    if (!el.length) lista.innerHTML = '<p class="muted">Nessun condominio assegnato a questo tablet. Quando l’ufficio, da BedoMaxBanco, invia un condominio e lo assegna a “' + esc(cfg.dispositivo) + '”, compare qui (serve la rete la prima volta).</p>';
+    if (!el.length) lista.innerHTML = '<p class="muted">Nessun condominio assegnato a questo tablet. Quando l’ufficio, da BedoMaxSede, invia un condominio e lo assegna a “' + esc(cfg.dispositivo) + '”, compare qui (serve la rete la prima volta).</p>';
     el.forEach(l => {
       const p = piano(l.condominio); const tot = p ? p.righe.length : l.ripartitori;
       const fatti = p ? p.righe.filter(r => statoCal(l.condominio, r.id)).length : 0;
