@@ -27,6 +27,7 @@
 .passi .pas.ora{border-color:var(--brand2);color:var(--brand)}
 .passi .pas.fatto{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
 .passi .fr{color:var(--muted)}
+.btn.pri.fatto{background:#15803d;border-color:#15803d;color:#fff;font-size:19px}
 html,body{margin:0;height:100%}
 body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:17px;line-height:1.4;-webkit-tap-highlight-color:transparent}
 header{position:sticky;top:0;z-index:5;background:var(--brand);color:var(--brand-fg);
@@ -134,7 +135,9 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.17.1';
+const VERSIONE = '0.17.2';
+// 0.17.2 (29/10/2026, BEDO "continua a non capirsi come salvare"): tasto verde grande "FATTO - vai al prossimo" alla fine
+// del 2° passo; nel 1° passo si dice che si salva alla fine del 2°. (Il dato resta comunque salvato anche senza premerlo.)
 // 0.17.1 (29/10/2026, BEDO): si deve capire quando il calorifero e' FINITO: barra dei passi (Vecchio > Nuovo > Salvato),
 // esito "FATTO - salvato" con stato d'invio, e i tasti "scrivi a mano" spiegati come ALTERNATIVA se la fotocamera non legge.
 // 0.17.0 (29/10/2026): ARCHIVIO NEL CLOUD BedoMax (Supabase) in alternativa a GitHub. Il QR "BMCLOUD1|nome|email|password"
@@ -919,14 +922,14 @@ function vistaCalorifero(c, id) {
       </div>
       ${barraPassi(s)}
       ${radHtml()}
-      ${s ? `<div class="esito ${s.r.stato === 'problema' || s.doppio ? 'ko' : 'ok'}"><span class="tit">${s.r.stato === 'problema' ? 'FATTO con PROBLEMA — salvato' : '✓ FATTO — calorifero salvato'}${s.mio ? '' : ' da ' + esc(s.r.da)}</span>
+      ${s ? `<div class="esito ${s.r.stato === 'problema' || s.doppio ? 'ko' : 'ok'}"><span class="tit">${s.r.stato === 'problema' ? 'Registrato con PROBLEMA' : '✓ Ripartitore registrato'}${s.mio ? '' : ' da ' + esc(s.r.da)}</span>
         ${s.mio ? '<b id="statoInvio">' + testoInvio(c) + '</b><br>' : ''}
         letto ${esc(s.r.letto || '-')} · ${s.r.metodo === 'manuale' ? 'inserito a mano' : s.r.metodo && s.r.metodo.startsWith('numero') ? 'dal numero stampato' + (s.r.metodo.includes('conf') ? ' (confermato)' : '') : 'letto dalla fotocamera'} · ${new Date(s.r.ora).toLocaleString('it-IT')}
         ${s.r.vecchio_ok === false ? '<br>⚠ vecchio non verificato: ' + esc(s.r.vecchio_nota || '') : s.r.vecchio_ok ? '<br>vecchio verificato ' + esc(s.r.vecchio_letto || '') : ''}
         ${s.r.nota ? '<br>' + esc(s.r.nota) : ''}${s.doppio ? '<br><b>Attenzione: risulta fatto anche da ' + esc(s.altri.map(a => a.da).join(', ')) + '</b>' : ''}</div>` : ''}
       <div id="esito">${esitoHtml || ''}</div>
       ${s ? dopoHtml() : ''}
-      ${!s && !p1() ? `<div class="esito warn"><span class="tit">1° passo: il VECCHIO</span>Prima di toglierlo, inquadra il ripartitore VECCHIO ancora montato su questo calorifero (deve essere ${esc(r.vecchia)}).</div>
+      ${!s && !p1() ? `<div class="esito warn"><span class="tit">1° passo: il VECCHIO</span>Prima di toglierlo, inquadra il ripartitore VECCHIO ancora montato su questo calorifero (deve essere ${esc(r.vecchia)}).<br><b>Poi il 2° passo è il NUOVO: quando la sua matricola è giusta il calorifero si registra e compare il tasto verde FATTO.</b></div>
       <button class="btn pri" id="inqV">📷 Inquadra il ripartitore VECCHIO</button>
       <button class="btn sec" id="manoV" style="flex-direction:column;gap:2px;padding-block:8px">⌨ Non legge? Scrivi a mano la matricola del vecchio<small style="font-weight:400;font-size:14px">solo se la fotocamera non riesce a leggere l’etichetta</small></button>
       <button class="btn sec pic" id="saltaV">Il vecchio manca o è illeggibile</button>` : `
@@ -994,7 +997,7 @@ function vistaCalorifero(c, id) {
   function barraPassi(s) {
     const v = p1(), fatto = !!s;
     const passo = (n, t, ok, att) => `<span class="pas ${ok ? 'fatto' : att ? 'ora' : ''}">${ok ? '✓' : n} ${t}</span>`;
-    return `<div class="passi">${passo(1, 'Vecchio', fatto || !!v, !fatto && !v)}<span class="fr">›</span>${passo(2, 'Nuovo', fatto, !fatto && !!v)}<span class="fr">›</span>${passo('', 'Salvato', fatto, false)}</div>`;
+    return `<div class="passi">${passo(1, 'Vecchio', fatto || !!v, !fatto && !v)}<span class="fr">›</span>${passo(2, 'Nuovo', fatto, !fatto && !!v)}<span class="fr">›</span>${passo(3, 'Salvato', fatto, false)}</div>`;
   }
   const radRil = r.rad || {}, haRad = !!(r.radiatore || Object.keys(radRil).length);
   const altroDisp = () => { const s = statoCal(c, id); return s && !s.mio; };
@@ -1049,15 +1052,16 @@ function vistaCalorifero(c, id) {
   }
   function dopoHtml() {
     const nx = prossimoDaFare(c, id);
-    return (nx ? `<button class="btn pri" id="avanti" style="flex-direction:column;gap:2px;padding-block:8px">Avanti ➜ prossimo calorifero<small style="font-weight:400;font-size:15px">int. ${esc(nx.interno)} · ${nx.n}. ${esc(nx.locale)}</small></button>`
-      : '<div class="esito ok"><span class="tit">Condominio finito: tutti i ripartitori sono stati sostituiti ✓</span></div>') +
+    return (nx ? `<button class="btn pri fatto" id="avanti" style="flex-direction:column;gap:2px;padding-block:12px">✓ FATTO — vai al prossimo<small style="font-weight:400;font-size:15px">prossimo: int. ${esc(nx.interno)} · ${nx.n}. ${esc(nx.locale)}</small></button>`
+      : '<div class="esito ok"><span class="tit">Condominio finito: tutti i ripartitori sono stati sostituiti ✓</span></div><button class="btn pri fatto" id="fineCond">✓ FATTO — torna al condominio</button>') +
       `<div class="riga"><button class="btn sec pic" id="aInt">↩ Caloriferi int. ${esc(r.interno)}</button><button class="btn sec pic" id="aCond">↩ Condominio</button></div>`;
   }
   function collegaDopo() {
     const nx = prossimoDaFare(c, id);
-    if ($('#avanti') && nx) $('#avanti').onclick = () => apriCalorifero(c, nx, true);
+    if ($('#avanti') && nx) $('#avanti').onclick = () => { sincronizza(c).catch(() => {}); apriCalorifero(c, nx, true); };
     if ($('#aInt')) $('#aInt').onclick = () => { pila.pop(); const t = pila[pila.length - 1]; if (!(t && t[0] === vistaInterno)) pila.push([vistaInterno, [c, r.interno]]); tornaA(vistaInterno); };
     if ($('#aCond')) $('#aCond').onclick = () => tornaA(vistaCondominio);
+    if ($('#fineCond')) $('#fineCond').onclick = () => { sincronizza(c).catch(() => {}); tornaA(vistaCondominio); };
   }
   const kP1 = 'vecchio:' + c + ':' + id, kFoto = c + '|' + id;
   function testoP1() {
@@ -1129,7 +1133,8 @@ function vistaCalorifero(c, id) {
       salvaRec(c, id, Object.assign({stato: 'posato', letto: m, metodo, ora: new Date().toISOString(), nota: ''}, datiVecchio(), radDati()));
       fotoPronta(); mem.set(kP1, null);
       if (navigator.vibrate) navigator.vibrate(80);
-      disegna(`<div class="esito ok"><span class="tit">Giusto ✓</span><b class="big">${esc(m)}</b><span>è il ripartitore previsto. <b>Non devi premere altro:</b> il calorifero è già salvato e parte da solo verso l’ufficio.</span></div>`);
+      disegna(`<div class="esito ok"><span class="tit">Giusto ✓</span><b class="big">${esc(m)}</b><span>è il ripartitore previsto. È già registrato: premi <b>FATTO</b> qui sotto per passare al prossimo.</span></div>`);
+      setTimeout(() => { const e = $('#esito'); if (e) e.scrollIntoView({block: 'start', behavior: 'smooth'}); }, 50);
       return;
     }
     if (navigator.vibrate) navigator.vibrate([300, 120, 300]);
