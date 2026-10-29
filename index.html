@@ -129,7 +129,10 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.16.0';
+const VERSIONE = '0.17.0';
+// 0.17.0 (29/10/2026): ARCHIVIO NEL CLOUD BedoMax (Supabase) in alternativa a GitHub. Il QR "BMCLOUD1|nome|email|password"
+// configura il dispositivo sul cloud (utente personale, revocabile da solo); i dispositivi col QR GitHub "BMCAMPO1" restano
+// come prima. Cloud: lavori/piano_righe/esiti, gli esiti si AGGIUNGONO (mai sovrascritti).
 // 0.16.0 (12/10/2026): l'ARCHIVIO puo' essere di un'altra ditta che usa BedoMaxSede (es. Leucari): il suo account
 // GitHub arriva col QR (4o campo) o si scrive a mano; senza, resta l'archivio di sempre (tablet gia' configurati: niente cambia)
 const OWNER_DEF = 'BedoMaxContab', REPO = 'campo-dati';
@@ -170,6 +173,94 @@ async function gh(metodo, percorso, corpo, raw) {
   return {stato: r.status, dati: raw ? await r.text() : await r.json()};
 }
 const b64 = s => btoa(unescape(encodeURIComponent(s)));
+
+/* ---------- cloud BedoMax (Supabase) - 0.17.0 ---------- */
+const SUPA = 'https://zpusxsxwccekpkaallou.supabase.co', SUPA_PUB = 'sb_publishable_XdJXou9uRqtTwVOYPnQXIQ_kPAmmIwy';
+const inCloud = () => !!(cfg && cfg.cloud && cfg.cloud.email);
+const haAccesso = () => !!(cfg && (cfg.token || inCloud()));
+function sbAuth(tipo, corpo) {
+  return fetch(SUPA + '/auth/v1/token?grant_type=' + tipo, {method: 'POST', cache: 'no-store',
+    headers: {'apikey': SUPA_PUB, 'Content-Type': 'application/json'}, body: JSON.stringify(corpo)});
+}
+async function sbToken(forza) {
+  let s = mem.get('sess', null);
+  if (!forza && s && s.access && s.scade - 60000 > Date.now()) return s.access;
+  let r = null;
+  if (s && s.refresh && !forza) { try { r = await sbAuth('refresh_token', {refresh_token: s.refresh}); } catch (e) { r = null; } }
+  if (!r || !r.ok) r = await sbAuth('password', {email: cfg.cloud.email, password: cfg.cloud.pw});
+  if (!r.ok) {
+    let j = {}; try { j = await r.json(); } catch (e) {}
+    const m = j.error_description || j.msg || j.message || j.error_code || j.error || '';
+    throw new Error('Cloud accesso ' + r.status + (/banned/i.test(m) ? ' bloccato' : '') + ': ' + m);
+  }
+  const j = await r.json();
+  s = {access: j.access_token, refresh: j.refresh_token, scade: Date.now() + (j.expires_in || 3600) * 1000}; mem.set('sess', s);
+  return s.access;
+}
+async function sb(metodo, percorso, corpo, giro) {
+  const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 45000);
+  const tok = await sbToken(!!giro);
+  const h = {'apikey': SUPA_PUB, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json'};
+  if (metodo !== 'GET') h.Prefer = 'return=minimal';
+  const r = await fetch(SUPA + '/rest/v1/' + percorso, {method: metodo, cache: 'no-store', signal: ctl.signal, headers: h,
+    body: corpo ? JSON.stringify(corpo) : undefined}).finally(() => clearTimeout(tm));
+  if (r.status === 401 && !giro) { mem.set('sess', null); return sb(metodo, percorso, corpo, true); }
+  if (!r.ok) { let m = ''; try { const j = await r.json(); m = j.message || j.msg || ''; } catch (e) {} throw new Error('Cloud ' + r.status + (m ? ': ' + m : '')); }
+  return metodo === 'GET' ? r.json() : null;
+}
+function lavoroDi(c) { const l = (mem.get('elenco', []) || []).find(x => x.condominio === c); return l && l.lavoro; }
+async function elencoCloud() {
+  const r = await sb('GET', 'lavori?select=id,caricato,indirizzo,amministratore,condomini(slug),piano_righe(count)&attivo=is.true');
+  return r.map(x => ({condominio: x.condomini ? x.condomini.slug : ('lavoro ' + x.id), indirizzo: x.indirizzo || '',
+    amministratore: x.amministratore || '', caricato: x.caricato, lavoro: x.id,
+    ripartitori: (x.piano_righe && x.piano_righe[0] && x.piano_righe[0].count) || 0}));
+}
+async function controllaCloud() {
+  let r;
+  try { r = await sb('GET', 'dispositivi?select=id,nome,slug,stato,revocato_il'); }
+  catch (err) { if (/bloccato|banned|Invalid login/i.test(err.message)) r = [{stato: 'revocato'}]; else throw err; }
+  const io = r[0] || null;
+  if (!io || io.stato === 'revocato') {
+    cfg = {dispositivo: cfg.dispositivo}; mem.set('cfg', cfg); mem.set('sess', null);
+    mem.set('revocato', io && io.revocato_il ? new Date(io.revocato_il).toLocaleDateString('it-IT') : 'sì');
+    pila = []; vai(vistaSetup);
+    throw new Error('dispositivo disattivato dall\'ufficio');
+  }
+  mem.set('mioDisp', {nome: io.nome, slug: io.slug, stato: io.stato}); mem.set('mioId', io.id);
+}
+async function sincronizzaCloud(c) {
+  const m0 = mem.get('mio', {}), sporco = !!(m0[c] && m0[c].sporco);
+  const L = lavoroDi(c);
+  if (!L) { if (!sporco) dimentica(c); return; }            // lavoro tolto dall'ufficio (o non piu' assegnato)
+  const l = (mem.get('elenco', []) || []).find(x => x.condominio === c) || {};
+  const righe = await sb('GET', 'piano_righe?select=id,interno,n,locale,vecchia,nuova,radiatore,rad&lavoro_id=eq.' + L + '&order=ord.asc');
+  mem.set('piano:' + c, {condominio: c, indirizzo: l.indirizzo || '', amministratore: l.amministratore || '', caricato: l.caricato, righe});
+  const mioId = mem.get('mioId', null);
+  const es = await sb('GET', 'esiti?select=riga_id,stato,ora,dati,dispositivo_id&lavoro_id=eq.' + L + (mioId ? '&dispositivo_id=neq.' + mioId : '') + '&order=ora.asc');
+  const altri = {};
+  for (const e of es) {
+    const k = 'd' + e.dispositivo_id, d = e.dati || {};
+    altri[k] = altri[k] || {dispositivo: d.dispositivo || ('dispositivo ' + e.dispositivo_id), rec: {}};
+    altri[k].rec[e.riga_id] = Object.assign({}, d, {stato: e.stato, ora: e.ora});
+  }
+  mem.set('altri:' + c, altri);
+  const m = mem.get('mio', {});
+  if (m[c] && m[c].sporco && mioId) {
+    const inv = mem.get('inviati:' + c, {}), rec = m[c].rec || {}, righeEs = [], fotografia = {};
+    for (const id of Object.keys(rec)) {
+      const j = JSON.stringify(rec[id]); fotografia[id] = j;
+      if (inv[id] === j) continue;
+      righeEs.push({lavoro_id: L, riga_id: id, dispositivo_id: mioId, stato: rec[id].stato || 'posato',
+        ora: rec[id].ora || new Date().toISOString(), dati: Object.assign({}, rec[id], {dispositivo: cfg.dispositivo, versione_app: VERSIONE})});
+    }
+    if (righeEs.length) await sb('POST', 'esiti', righeEs);
+    mem.set('inviati:' + c, Object.assign(inv, fotografia));
+    const m2 = mem.get('mio', {}); m2[c].inviato = Date.now();
+    if (JSON.stringify(m2[c].rec) === JSON.stringify(rec)) m2[c].sporco = false;
+    mem.set('mio', m2);
+  }
+  mem.set('ultimaSync:' + c, Date.now());
+}
 
 /* ---------- stato rete ---------- */
 function aggiornaRete() {
@@ -220,6 +311,7 @@ async function blob64(b) {
 }
 const entro = (p, ms) => Promise.race([p, new Promise((_, ko) => setTimeout(() => ko(new Error('tempo scaduto')), ms))]);
 async function inviaFoto(c) {      // foto delle sostituzioni REGISTRATE (pronta) -> lavori/<cond>/foto/<nome>
+  if (inCloud()) return;             // nel cloud niente foto del display (lettura del vecchio dalla telelettura, decisione 06/10)
   let chiavi = []; try { chiavi = await entro(fotoDB.keys(), 10000); } catch (e) { return; }
   for (const k of chiavi) {
     const v = await entro(fotoDB.get(k), 10000);
@@ -233,8 +325,9 @@ async function inviaFoto(c) {      // foto delle sostituzioni REGISTRATE (pronta
 /* ---------- sincronizzazione ---------- */
 let inCorso = {};
 async function sincronizza(c) {
-  if (!navigator.onLine || !cfg || !cfg.token || (inCorso[c] && Date.now() - inCorso[c] < 90000)) return;
+  if (!navigator.onLine || !haAccesso() || (inCorso[c] && Date.now() - inCorso[c] < 90000)) return;
   inCorso[c] = Date.now();
+  if (inCloud()) { try { await sincronizzaCloud(c); } finally { inCorso[c] = 0; aggiornaRete(); } return; }
   try {
     const p = await gh('GET', 'contents/' + percorsoCond(c) + '/piano.json', null, true);
     const m0 = mem.get('mio', {}), sporco = !!(m0[c] && m0[c].sporco);
@@ -280,12 +373,13 @@ function mieiLavori() {
 }
 function dimentica(c) {
   const m = mem.get('mio', {}); delete m[c]; mem.set('mio', m);
-  try { ['piano:', 'altri:', 'ultimaSync:'].forEach(p => localStorage.removeItem('bmcampo:' + p + c)); } catch (e) {}
+  try { ['piano:', 'altri:', 'ultimaSync:', 'inviati:'].forEach(p => localStorage.removeItem('bmcampo:' + p + c)); } catch (e) {}
   pulisciPassi(c);
 }
 /* dispositivi.json (scritto da BedoMaxSede "TABLET AUTORIZZATI"): {dispositivi:[{nome, slug, creato, scadenza, stato}]}
    stato 'revocato' -> questo dispositivo cancella la sua chiave e si ferma. Scadenza -> avviso 15 giorni prima. */
 async function controllaDispositivo() {
+  if (inCloud()) return controllaCloud();
   const d = await gh('GET', 'contents/dispositivi.json', null, true);
   if (!d.dati) return;
   const io = (JSON.parse(d.dati).dispositivi || []).find(x => x.slug === slug(cfg.dispositivo));
@@ -300,17 +394,19 @@ function messaggioErrore(err) {
   const m = String(err && err.message || err);
   if (/GitHub 401/.test(m)) return 'La chiave di accesso non è più valida (scaduta o eliminata). Chiedi all’ufficio un nuovo QR: Dispositivo → cambia → Configura con QR.';
   if (/GitHub 403|GitHub 404/.test(m)) return 'La chiave non ha accesso all’archivio dei lavori. Chiedi all’ufficio un nuovo QR.';
+  if (/Cloud accesso 400|Cloud accesso 401/.test(m)) return 'Accesso al cloud non riuscito (dispositivo rinnovato o disattivato?). Chiedi all’ufficio un nuovo QR.';
+  if (/Cloud 401|Cloud 403/.test(m)) return 'Il cloud rifiuta l’accesso. Chiedi all’ufficio un nuovo QR.';
   if (/abort|Failed to fetch|Load failed|NetworkError/i.test(m)) return 'Rete assente o troppo lenta: riprovo da solo appena c’è campo.';
   return m;
 }
 let ultimaTutto = 0;
 async function sincronizzaTutto() {
-  if (!navigator.onLine || !cfg || !cfg.token) return;
+  if (!navigator.onLine || !haAccesso()) return;
   ultimaTutto = Date.now();
   try {
     await controllaDispositivo();
-    const e = await gh('GET', 'contents/lavori/elenco.json', null, true);
-    if (e.dati) mem.set('elenco', JSON.parse(e.dati));
+    if (inCloud()) mem.set('elenco', await elencoCloud());
+    else { const e = await gh('GET', 'contents/lavori/elenco.json', null, true); if (e.dati) mem.set('elenco', JSON.parse(e.dati)); }
     mem.set('erroreSync', null); mem.set('ultimoElenco', Date.now());
     // condomini non piu' assegnati a questo tablet: via dal dispositivo (prima pero' si invia quello che c'e' da inviare)
     const miei = new Set(mieiLavori().map(l => l.condominio)), mm = mem.get('mio', {});
@@ -467,6 +563,8 @@ async function apriScanner(atteso, note) {
 const ownerValido = o => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(o);
 function leggiQrConfig(t) {
   const p = String(t || '').split('|');
+  if (p.length === 4 && p[0] === 'BMCLOUD1' && p[1].trim() && /@/.test(p[2]) && p[3].trim().length >= 16)
+    return {dispositivo: p[1].trim(), cloud: {email: p[2].trim(), pw: p[3].trim()}};
   if ((p.length !== 3 && p.length !== 4) || p[0] !== 'BMCAMPO1' || !p[1].trim() || !/^github_pat_\w{20,}$/.test(p[2].trim())) return null;
   const own = p.length === 4 ? p[3].trim() : '';
   if (own && !ownerValido(own)) return null;
@@ -563,12 +661,12 @@ function vistaSetup() {
       <label class="campo" for="nome">Nome del dispositivo (es. Tablet 1, Telefono Bedo)
         <input class="txt" id="nome" autocomplete="off" value="${esc(cfg ? cfg.dispositivo : '')}"></label>
       <label class="campo" for="chiave">Chiave di accesso all'archivio (fornita dall'ufficio)
-        <input class="txt" id="chiave" type="password" autocomplete="off" value="${esc(cfg ? cfg.token : '')}"></label>
+        <input class="txt" id="chiave" type="password" autocomplete="off" value="${esc(cfg && cfg.token ? cfg.token : '')}"></label>
       <label class="campo" for="own">Account dell’archivio (solo se l’ufficio lo indica; vuoto = ${OWNER_DEF})
         <input class="txt" id="own" autocomplete="off" autocapitalize="off" value="${esc(cfg && cfg.owner ? cfg.owner : '')}"></label>
       <button class="btn sec" id="salva">Salva e prova il collegamento</button>
       </details>
-      <p class="muted">BedoMaxTecnico ${VERSIONE} · archivio ${owner()}/${REPO}</p>
+      <p class="muted">BedoMaxTecnico ${VERSIONE} · archivio ${inCloud() ? 'cloud BedoMax' : owner() + '/' + REPO}</p>
     </div>`;
   const prova = async (nome, tok, own) => {
     const out = $('#esitoSetup');
@@ -592,10 +690,29 @@ function vistaSetup() {
       $('#prosegui').onclick = () => { pila = []; vai(vistaLavori); };
     }
   };
+  const provaCloud = async conf => {
+    const out = $('#esitoSetup');
+    const altro = !inCloud() || cfg.cloud.email !== conf.cloud.email;
+    if (altro) { mem.set('elenco', []); mem.set('sess', null); }
+    cfg = {dispositivo: conf.dispositivo, cloud: conf.cloud}; mem.set('cfg', cfg); mem.set('sess', null);
+    out.innerHTML = '<div class="attesa">Provo il collegamento al cloud…</div>';
+    try {
+      mem.set('revocato', null); mem.set('erroreSync', null);
+      try { await controllaCloud(); } catch (err) { if (/disattivato/.test(err.message)) return; throw err; }
+      mem.set('elenco', await elencoCloud());
+      out.innerHTML = '<div class="esito ok"><span class="tit">Collegato al cloud BedoMax come “' + esc(conf.dispositivo) + '”.</span></div>';
+      setTimeout(() => { pila = []; vai(vistaLavori); sincronizzaTutto(); }, 900);
+    } catch (err) {
+      out.innerHTML = '<div class="esito ko"><span class="tit">Collegamento non riuscito</span>' + esc(messaggioErrore(err)) +
+        '<br>Se sei senza rete puoi comunque proseguire.</div><button class="btn sec" id="prosegui">Prosegui senza provare</button>';
+      $('#prosegui').onclick = () => { pila = []; vai(vistaLavori); };
+    }
+  };
   una($('#qr'), async () => {
     let conf;
     try { conf = await scannerQr(); } catch (e) { avviso('Fotocamera non disponibile: ' + e.message + '. Usa “Configura a mano”.'); return; }
     if (!conf) return;
+    if (conf.cloud) { await provaCloud(conf); return; }
     $('#nome').value = conf.dispositivo; $('#chiave').value = conf.token; $('#own').value = conf.owner || '';
     await prova(conf.dispositivo, conf.token, conf.owner);
   });
@@ -1019,7 +1136,7 @@ function vistaCalorifero(c, id) {
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(e => console.warn('sw', e));
 preparaMotore().catch(e => console.warn('motore', e));
 applicaZoom(); aggiornaRete();
-if (!cfg || !cfg.token) vai(vistaSetup); else { vai(vistaLavori); sincronizzaTutto(); }
+if (!haAccesso()) vai(vistaSetup); else { vai(vistaLavori); sincronizzaTutto(); }
 </script>
 </body>
 </html>
