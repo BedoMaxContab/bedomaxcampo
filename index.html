@@ -22,6 +22,11 @@
   --bg:#171412; --fg:#f1ece6; --muted:#a99e93; --panel:#221e1b; --line:#3a332d;
   --ok:#86efac; --ok-bg:#14361f; --ko:#fca5a5; --ko-bg:#3b1414; --warn:#fcd34d; --warn-bg:#3a2a0b; color-scheme:dark}}
 *{box-sizing:border-box}
+.passi{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0}
+.passi .pas{padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel);font-weight:700;font-size:15px;color:var(--muted)}
+.passi .pas.ora{border-color:var(--brand2);color:var(--brand)}
+.passi .pas.fatto{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
+.passi .fr{color:var(--muted)}
 html,body{margin:0;height:100%}
 body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:17px;line-height:1.4;-webkit-tap-highlight-color:transparent}
 header{position:sticky;top:0;z-index:5;background:var(--brand);color:var(--brand-fg);
@@ -129,7 +134,9 @@ pre.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:b
    - ogni dispositivo scrive SOLO il suo file: lavori/<cond>/disp-<nome>.json  -> nessun conflitto
    - tutto resta nel dispositivo (localStorage) e si sincronizza quando c'e' rete
    ===================================================================== */
-const VERSIONE = '0.17.0';
+const VERSIONE = '0.17.1';
+// 0.17.1 (29/10/2026, BEDO): si deve capire quando il calorifero e' FINITO: barra dei passi (Vecchio > Nuovo > Salvato),
+// esito "FATTO - salvato" con stato d'invio, e i tasti "scrivi a mano" spiegati come ALTERNATIVA se la fotocamera non legge.
 // 0.17.0 (29/10/2026): ARCHIVIO NEL CLOUD BedoMax (Supabase) in alternativa a GitHub. Il QR "BMCLOUD1|nome|email|password"
 // configura il dispositivo sul cloud (utente personale, revocabile da solo); i dispositivi col QR GitHub "BMCAMPO1" restano
 // come prima. Cloud: lavori/piano_righe/esiti, gli esiti si AGGIUNGONO (mai sovrascritti).
@@ -282,7 +289,13 @@ function mieiRec(c) { const m = mem.get('mio', {}); return (m[c] && m[c].rec) ||
 function altriRec(c) { return mem.get('altri:' + c, {}); }
 function salvaRec(c, id, r) {
   const m = mem.get('mio', {}); m[c] = m[c] || {rec: {}}; m[c].rec[id] = r; m[c].sporco = true; mem.set('mio', m);
-  aggiornaRete(); sincronizza(c).catch(() => {});
+  aggiornaRete();
+  sincronizza(c).catch(() => {}).then(() => { const e = document.getElementById('statoInvio'); if (e) e.textContent = testoInvio(c); });
+}
+function testoInvio(c) {
+  const m = mem.get('mio', {})[c];
+  if (m && m.sporco) return navigator.onLine ? 'Salvato nel telefono · in invio all’ufficio…' : 'Salvato nel telefono · parte da solo appena c’è rete';
+  return 'Salvato e arrivato in ufficio ✓';
 }
 // stato visto da questo dispositivo: il mio record vince, altrimenti quello di un altro dispositivo
 function statoCal(c, id) {
@@ -904,8 +917,10 @@ function vistaCalorifero(c, id) {
         <span>Togli il vecchio</span><b>${esc(r.vecchia)}</b>
         <span>Monta il nuovo</span><b>${esc(r.nuova)}</b>
       </div>
+      ${barraPassi(s)}
       ${radHtml()}
-      ${s ? `<div class="esito ${s.r.stato === 'problema' || s.doppio ? 'ko' : 'ok'}"><span class="tit">${s.r.stato === 'problema' ? 'Segnato con PROBLEMA' : 'Già sostituito'}${s.mio ? '' : ' da ' + esc(s.r.da)}</span>
+      ${s ? `<div class="esito ${s.r.stato === 'problema' || s.doppio ? 'ko' : 'ok'}"><span class="tit">${s.r.stato === 'problema' ? 'FATTO con PROBLEMA — salvato' : '✓ FATTO — calorifero salvato'}${s.mio ? '' : ' da ' + esc(s.r.da)}</span>
+        ${s.mio ? '<b id="statoInvio">' + testoInvio(c) + '</b><br>' : ''}
         letto ${esc(s.r.letto || '-')} · ${s.r.metodo === 'manuale' ? 'inserito a mano' : s.r.metodo && s.r.metodo.startsWith('numero') ? 'dal numero stampato' + (s.r.metodo.includes('conf') ? ' (confermato)' : '') : 'letto dalla fotocamera'} · ${new Date(s.r.ora).toLocaleString('it-IT')}
         ${s.r.vecchio_ok === false ? '<br>⚠ vecchio non verificato: ' + esc(s.r.vecchio_nota || '') : s.r.vecchio_ok ? '<br>vecchio verificato ' + esc(s.r.vecchio_letto || '') : ''}
         ${s.r.nota ? '<br>' + esc(s.r.nota) : ''}${s.doppio ? '<br><b>Attenzione: risulta fatto anche da ' + esc(s.altri.map(a => a.da).join(', ')) + '</b>' : ''}</div>` : ''}
@@ -913,13 +928,13 @@ function vistaCalorifero(c, id) {
       ${s ? dopoHtml() : ''}
       ${!s && !p1() ? `<div class="esito warn"><span class="tit">1° passo: il VECCHIO</span>Prima di toglierlo, inquadra il ripartitore VECCHIO ancora montato su questo calorifero (deve essere ${esc(r.vecchia)}).</div>
       <button class="btn pri" id="inqV">📷 Inquadra il ripartitore VECCHIO</button>
-      <button class="btn sec pic" id="manoV">⌨ Scrivi la matricola del vecchio</button>
+      <button class="btn sec" id="manoV" style="flex-direction:column;gap:2px;padding-block:8px">⌨ Non legge? Scrivi a mano la matricola del vecchio<small style="font-weight:400;font-size:14px">solo se la fotocamera non riesce a leggere l’etichetta</small></button>
       <button class="btn sec pic" id="saltaV">Il vecchio manca o è illeggibile</button>` : `
       ${!s ? testoP1() + `<div class="esito warn"><span class="tit">Ora togli il vecchio e monta il NUOVO ${esc(r.nuova)}</span>Il vecchio smontato resta al cliente.</div>` : ''}
       <button class="btn ${s ? 'sec' : 'pri'}" id="inquadra">📷 ${s ? 'Rileggi il ripartitore nuovo montato' : '2° passo: inquadra il NUOVO montato'}</button>
       <label class="btn sec pic foto" for="scatto">Scatta una foto (se l'inquadratura non legge)
         <input id="scatto" type="file" accept="image/*" capture="environment"></label>
-      <button class="btn sec" id="mano" style="flex-direction:column;gap:2px;padding-block:8px">⌨ Scrivi la matricola a mano<small style="font-weight:400;font-size:14px">fotocamera guasta o etichetta illeggibile</small></button>
+      <button class="btn sec" id="mano" style="flex-direction:column;gap:2px;padding-block:8px">⌨ Non legge? Scrivi a mano la matricola del ${s ? 'nuovo' : 'NUOVO'}<small style="font-weight:400;font-size:14px">solo se fotocamera e foto non riescono a leggere l’etichetta</small></button>
       ${s && s.mio ? '<button class="btn sec pic" id="annulla">Annulla questa sostituzione</button>' : ''}`}
       ${!s && p1() ? '<button class="btn sec pic" id="rifaiV">Rifai il 1° passo (vecchio)</button>' : ''}`;
     collegaRad();
@@ -976,6 +991,11 @@ function vistaCalorifero(c, id) {
       $('#no').onclick = () => disegna(); una($('#si'), () => { salvaRec(c, id, {stato: 'annullato', ora: new Date().toISOString()}); disegna(); });
     };
   };
+  function barraPassi(s) {
+    const v = p1(), fatto = !!s;
+    const passo = (n, t, ok, att) => `<span class="pas ${ok ? 'fatto' : att ? 'ora' : ''}">${ok ? '✓' : n} ${t}</span>`;
+    return `<div class="passi">${passo(1, 'Vecchio', fatto || !!v, !fatto && !v)}<span class="fr">›</span>${passo(2, 'Nuovo', fatto, !fatto && !!v)}<span class="fr">›</span>${passo('', 'Salvato', fatto, false)}</div>`;
+  }
   const radRil = r.rad || {}, haRad = !!(r.radiatore || Object.keys(radRil).length);
   const altroDisp = () => { const s = statoCal(c, id); return s && !s.mio; };
   function radHtml() {
@@ -1109,7 +1129,7 @@ function vistaCalorifero(c, id) {
       salvaRec(c, id, Object.assign({stato: 'posato', letto: m, metodo, ora: new Date().toISOString(), nota: ''}, datiVecchio(), radDati()));
       fotoPronta(); mem.set(kP1, null);
       if (navigator.vibrate) navigator.vibrate(80);
-      disegna(`<div class="esito ok"><span class="tit">Giusto ✓ registrato</span><b class="big">${esc(m)}</b><span>è il ripartitore previsto per questo calorifero.</span></div>`);
+      disegna(`<div class="esito ok"><span class="tit">Giusto ✓</span><b class="big">${esc(m)}</b><span>è il ripartitore previsto. <b>Non devi premere altro:</b> il calorifero è già salvato e parte da solo verso l’ufficio.</span></div>`);
       return;
     }
     if (navigator.vibrate) navigator.vibrate([300, 120, 300]);
